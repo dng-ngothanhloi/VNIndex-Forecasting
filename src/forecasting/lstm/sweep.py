@@ -363,6 +363,18 @@ def run_train_and_evaluate(context: dict) -> dict:
             candidates[(lookback, batch_size)] = dict(row)
             candidates[(lookback, batch_size)]["val_dates"] = val_dates
 
+            # ── Persist epoch-level tuning history BEFORE disposing ────────
+            # (Phase E: never lose learning curves again; zero numerical impact)
+            try:
+                hist_dir = results_dir / "tuning_history"
+                hist_dir.mkdir(parents=True, exist_ok=True)
+                hist_df = pd.DataFrame(history.history)
+                hist_df.index.name = "epoch"
+                hist_df.index = hist_df.index + 1  # 1-indexed epochs
+                hist_df.to_csv(hist_dir / f"tuning_history_LB{lookback}_BS{batch_size}.csv")
+            except Exception as _hist_err:
+                print(f"[WARN] Could not save tuning history: {_hist_err}")
+
             # Free the TF model/graph immediately — never accumulate 10
             # model objects in RAM across the sweep (P1).
             del model, history
@@ -395,6 +407,16 @@ def run_train_and_evaluate(context: dict) -> dict:
     best_epoch = int(selected_record["Best_Epoch"])
     print(f"\n[SELECT] Selected model by Val_RMSE: lookback={selected_lookback}, batch={selected_batch_size}"
           f"  Val_RMSE={selected_record['Val_RMSE']:.4f}  best_epoch={best_epoch}")
+
+    # ── Copy selected candidate's tuning history as the reference ──────
+    try:
+        hist_src = results_dir / "tuning_history" / f"tuning_history_LB{selected_lookback}_BS{selected_batch_size}.csv"
+        if hist_src.exists():
+            import shutil
+            shutil.copy2(hist_src, results_dir / "selected_tuning_history.csv")
+            print(f"[SAVED] selected_tuning_history.csv (LB{selected_lookback}_BS{selected_batch_size})")
+    except Exception:
+        pass
 
     # ── FINAL REFIT (P0-3B, D4): NEW model instance, unique Train+Val,
     # epochs=best_epoch, NO EarlyStopping/ReduceLROnPlateau. Reuses the

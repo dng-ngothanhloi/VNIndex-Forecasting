@@ -620,7 +620,7 @@ def save_pca_individual_figures(
 
     # (A) PC1, PC2, PC3 LOADINGS
     colors_time = ["#1565C0", "#E65100", "#2E7D32"]
-    for i, pc in enumerate(pc_cols[:3]):
+    for i, pc in enumerate(pc_cols[:5]):
         fig, ax = plt.subplots(figsize=(10, 6))
         top15 = loadings[pc].abs().nlargest(15)
         colors = ["#1565C0" if loadings.loc[s, pc] > 0 else "#C62828" for s in top15.index]

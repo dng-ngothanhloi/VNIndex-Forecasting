@@ -239,11 +239,129 @@ def run_per_seed_dm_diagnostic(summary: pd.DataFrame, context: dict) -> None:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Phase 3D: LSTM multi-seed stability")
     p.add_argument("--skip-dm", action="store_true", help="Skip the per-seed DM diagnostic")
+    p.add_argument("--validation-diagnostic", action="store_true",
+                   help="Run per-seed Train->Val EarlyStopping diagnostic (NO final refit, "
+                        "NO Test prediction). Reports own_best_epoch per seed for convergence analysis.")
     return p.parse_args()
+
+
+def run_validation_diagnostic(context: dict) -> None:
+    """Per-seed validation diagnostic: fixed LB/BS, Train→Val with EarlyStopping,
+    reports own_best_epoch per seed. NO final Train+Val refit, NO Test prediction.
+    
+    Purpose: determine if the best_epoch=1 anomaly is seed-dependent or
+    structural (e.g. distribution shift making Val impossible to fit).
+    """
+    from src.forecasting.lstm.data import make_windowed_data, make_cross_boundary_windowed_data, add_target_history
+    from src.forecasting.lstm.sweep import _build_lstm_model, MinEpochEarlyStopping
+
+    PROJECT_ROOT_ctx = context["PROJECT_ROOT"]
+    config_path = PROJECT_ROOT_ctx / "configs" / "config.yaml"
+    with open(config_path, "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+    lstm_cfg = config.get("lstm", {})
+
+    selected_lookback = context["selected_lookback"]
+    selected_batch_size = context["selected_batch_size"]
+    epochs = lstm_cfg.get("epochs", 150)
+    learning_rate = lstm_cfg.get("learning_rate", 1e-4)
+    lstm_units = lstm_cfg.get("lstm_units", [64, 32])
+    dense_units = lstm_cfg.get("dense_units", [16])
+    dropout_rate = lstm_cfg.get("dropout_rate", 0.2)
+    use_batch_norm = lstm_cfg.get("use_batch_norm", False)
+    patience = lstm_cfg.get("early_stopping_patience", 25)
+
+    train_scaled_df = context["train_scaled_df"]
+    val_scaled_df = context["val_scaled_df"]
+    pc_cols = context["pc_cols"]
+    target_col = context["target_col"]
+
+    # Prepare Train and Val data (same as tuning sweep)
+    X_train, y_train, _ = make_windowed_data(train_scaled_df, pc_cols, target_col, selected_lookback)
+    X_train_hist = add_target_history(train_scaled_df, target_col, selected_lookback)
+    X_train_final = np.concatenate([X_train, X_train_hist], axis=2)
+
+    X_val, y_val, X_val_hist, _ = make_cross_boundary_windowed_data(
+        train_scaled_df, val_scaled_df, pc_cols, target_col, selected_lookback,
+    )
+    X_val_final = np.concatenate([X_val, X_val_hist], axis=2)
+
+    results_dir = PROJECT_ROOT_ctx / "outputs" / "lstm_vnindex_multiseed"
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    _hdr(f"VALIDATION DIAGNOSTIC: LB={selected_lookback} BS={selected_batch_size} "
+         f"epochs_budget={epochs} patience={patience}")
+    print(f"  Train samples: {len(X_train_final)} | Val samples: {len(X_val_final)}")
+    print(f"  Seeds: {GOVERNED_SEEDS}")
+    print(f"  NOTE: NO final refit, NO Test prediction — diagnostic only.\n")
+
+    rows = []
+    for seed in GOVERNED_SEEDS:
+        import tensorflow as tf
+        tf.keras.backend.clear_session()
+
+        model = _build_lstm_model(
+            selected_lookback, X_train_final.shape[-1],
+            learning_rate=learning_rate, lstm_units=lstm_units,
+            dense_units=dense_units, dropout_rate=dropout_rate,
+            use_batch_norm=use_batch_norm, seed=seed,
+        )
+
+        es = MinEpochEarlyStopping(
+            start_epoch=0, monitor="val_loss", patience=patience,
+            restore_best_weights=True,
+        )
+
+        history = model.fit(
+            X_train_final, y_train,
+            validation_data=(X_val_final, y_val),
+            epochs=epochs, batch_size=selected_batch_size,
+            callbacks=[es], verbose=0, shuffle=False,
+        )
+
+        val_losses = history.history.get("val_loss", [])
+        train_losses = history.history.get("loss", [])
+        epochs_executed = len(val_losses)
+        own_best_epoch = int(np.argmin(val_losses) + 1) if val_losses else 0
+        own_best_val_loss = float(min(val_losses)) if val_losses else None
+        epoch1_val_loss = float(val_losses[0]) if val_losses else None
+
+        rows.append({
+            "seed": seed,
+            "frozen_lookback": selected_lookback,
+            "frozen_batch": selected_batch_size,
+            "epochs_budget": epochs,
+            "epochs_executed": epochs_executed,
+            "own_best_epoch": own_best_epoch,
+            "own_best_val_loss": own_best_val_loss,
+            "epoch1_val_loss": epoch1_val_loss,
+            "final_train_loss": float(train_losses[-1]) if train_losses else None,
+            "final_val_loss": float(val_losses[-1]) if val_losses else None,
+        })
+        print(f"[SEED {seed}] epochs_executed={epochs_executed} own_best_epoch={own_best_epoch} "
+              f"best_val_loss={own_best_val_loss:.6f}" if own_best_val_loss else f"[SEED {seed}] no history")
+
+        del model, history
+        tf.keras.backend.clear_session()
+
+    diag_df = pd.DataFrame(rows)
+    out_path = results_dir / "lstm_seed_validation_diagnostic.csv"
+    diag_df.to_csv(out_path, index=False)
+    print(f"\n[SAVED] {out_path}")
+    print("\n[Phase 3D] Validation diagnostic (per-seed own EarlyStopping):")
+    print(diag_df.to_string(index=False))
 
 
 def main() -> None:
     args = parse_args()
+
+    if args.validation_diagnostic:
+        # Lightweight: still needs reference tuning to get frozen LB/BS
+        context = run_reference_tuning()
+        run_validation_diagnostic(context)
+        _hdr("VALIDATION DIAGNOSTIC COMPLETE")
+        return
+
     context = run_reference_tuning()
     summary = run_stability_seeds(context)
     if not args.skip_dm:

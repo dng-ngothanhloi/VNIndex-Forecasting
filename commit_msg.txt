@@ -1,12 +1,10 @@
-fix: artifact isolation, multi-cev path refs, full-sweep mode
+refactor(artifacts): group full-sweep under one Run_* directory
 
-- run_all_multi_cev.py: replace dead ardl/lstm/compare/ dir refs
-  with experiments/ canonical entry points
-- run_experiment.py: add --full-sweep (NoReduction + all CEV levels
-  as separate artifacts/Run_* snapshots, no overwrite)
-- compare_representations.py: deduplicate by (method, cev) keeping
-  latest; use clear labels (no_dr, cev_0.75, ...); fix TypeError
-  on mixed-type columns
-- lstm/data.py: fix NameError (target_col used before assignment)
-- ardl/diagnostics.py: fix KeyError on untested features in summary
-- config.yaml: cev_thresholds already [0.75..0.95]
+- Rewrite run_experiment.py --full-sweep: one parent Run_* with child
+  label subdirs (no_dr/, pca_cev_0.75/, ..., pca_cev_0.95/)
+- Each child: self-contained snapshot + run_manifest + run_summary
+- Parent: sweep_manifest.json with planned/completed/failed labels
+- Rewrite compare_representations.py: require --run-dir (no global scan)
+- Clean mutable outputs between children to prevent stale data
+- Add tests/test_sweep_artifact_model.py (11 tests, all pass)
+- Full suite: 113 passed, 17 skipped, 0 failures
