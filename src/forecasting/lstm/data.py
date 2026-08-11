@@ -25,24 +25,29 @@ def run_load_data(context: dict) -> dict:
     val_df = val_pca.join(vnindex, how="inner")
     test_df = test_pca.join(vnindex, how="inner")
 
-    pc_cols = [c for c in train_df.columns if c.startswith("PC")]
+    pc_cols = [c for c in train_df.columns if c != "VNINDEX"]
     target_col = "VNINDEX"
+
+    # Determine representation method for reporting
+    _cfg_path = PROJECT_ROOT / "configs" / "config.yaml"
+    _reduction_method = "pca"
+    _use_overlap = False
+    if _cfg_path.exists():
+        with open(_cfg_path, "r", encoding="utf-8") as _f:
+            _full_cfg = yaml.safe_load(_f)
+            _use_overlap = _full_cfg.get("preprocess", {}).get("use_overlap_val", False)
+            _reduction_method = _full_cfg.get("reduction", {}).get("method", "pca")
+
+    _repr_label = "PCs" if _reduction_method == "pca" else "features"
 
     print("Shapes:")
     print("  train_df:", train_df.shape)
     print("  val_df  :", val_df.shape)
     print("  test_df :", test_df.shape)
-    print("  number of PCs:", len(pc_cols))
+    print(f"  number of {_repr_label}:", len(pc_cols))
 
-    # Read split strategy from config to know whether overlap is expected
-    _cfg_path = PROJECT_ROOT / "configs" / "config.yaml"
-    _use_overlap = False
-    if _cfg_path.exists():
-        with open(_cfg_path, "r", encoding="utf-8") as _f:
-            _use_overlap = yaml.safe_load(_f).get("preprocess", {}).get("use_overlap_val", False)
-
-    # Validate: k >= 1 (works for any CEV threshold, not just k=11)
-    assert len(pc_cols) >= 1, f"No PC columns found. Expected at least 1, got {len(pc_cols)}."
+    # Validate: at least 1 feature column
+    assert len(pc_cols) >= 1, f"No feature columns found. Expected at least 1, got {len(pc_cols)}."
 
     # Validate monotonic dates
     assert train_df.index.is_monotonic_increasing, "train_df index not sorted"

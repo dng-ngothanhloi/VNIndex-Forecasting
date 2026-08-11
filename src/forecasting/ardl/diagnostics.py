@@ -66,9 +66,16 @@ def run_adf_stationarity_test(context: dict) -> dict:
     if adf_diff1[1] < 0.05:
         print(f"    → {target_col} is I(0) after differencing (becomes stationary)")
 
-    # Test each PC
-    print(f"\nTesting {len(pc_cols)} principal components...")
-    for pc_col in pc_cols:
+    # Test each feature column
+    # For high-dimensional representations (NoReduction, F>50), test only a
+    # summary sample to avoid excessive runtime; report aggregate counts.
+    _max_detailed_adf = 50
+    _test_cols = pc_cols if len(pc_cols) <= _max_detailed_adf else pc_cols[:_max_detailed_adf]
+    if len(pc_cols) > _max_detailed_adf:
+        print(f"\nTesting first {_max_detailed_adf} of {len(pc_cols)} feature columns (NoReduction mode)...")
+    else:
+        print(f"\nTesting {len(pc_cols)} feature columns...")
+    for pc_col in _test_cols:
         x_level = full_df[pc_col].dropna().astype(float)
 
         adf_level = adfuller(x_level, autolag="AIC")
@@ -111,7 +118,7 @@ def run_adf_stationarity_test(context: dict) -> dict:
 
     print(f"  I(0) variables (stationary at level):     {i0_vars}")
     print(f"  I(1) variables (need differencing):       {i1_vars}")
-    print(f"  Total variables tested:                    {len(pc_cols) + 1}")
+    print(f"  Total variables tested:                    {len(_test_cols) + 1}")
 
     # Check ARDL suitability
     ardl_suitable = True
@@ -125,8 +132,10 @@ def run_adf_stationarity_test(context: dict) -> dict:
 
     # Check if we have at least some I(0) or I(1) mixed
     pc_orders = []
-    for pc_col in pc_cols:
-        pval = adf_results[f"{pc_col}_level"]["pvalue"]
+    for pc_col in _test_cols:
+        pval = adf_results.get(f"{pc_col}_level", {}).get("pvalue")
+        if pval is None:
+            continue
         if pval < 0.05:
             pc_orders.append("I(0)")
         else:

@@ -799,6 +799,110 @@ def save_scree_plot_figure(
     
     return out
 # ─────────────────────────────────────────────────────────────────
+# NOREDUCTION PIPELINE (identity: output raw scaled features unchanged)
+# ─────────────────────────────────────────────────────────────────
+def run_noreduction_pipeline(project_root: Path, config_path: Path) -> None:
+    """Output raw scaled features as the 'representation' for forecasting.
+
+    Writes the existing Train/Val/Test scaled data (produced by preprocess.py)
+    directly to the pca/ output directory in the same format the forecasting
+    layer expects (train_pca.csv, val_pca.csv, test_pca.csv with date index +
+    feature columns). Feature columns retain their original names (stock symbols),
+    NOT renamed to PC1..PCn.
+
+    Also writes a minimal pca_metrics.csv so downstream reporting can identify
+    this as a NoReduction run.
+    """
+    cfg = load_config(config_path)
+    paths = cfg["paths"]
+
+    processed_dir = project_root / paths.get("artifacts_dir", paths.get("processed_dir", "data/processed"))
+    subdirs = paths.get("artifacts_subdirs", paths.get("processed_subdirs", {}))
+    splits_dir = processed_dir / subdirs.get("splits", "splits")
+    pca_dir = processed_dir / subdirs.get("pca", "pca")
+    pca_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load scaled data
+    for fname in ["train_scaled.csv", "val_scaled.csv", "test_scaled.csv"]:
+        if not (splits_dir / fname).exists():
+            raise FileNotFoundError(
+                f"{fname} not found in {splits_dir}. Run preprocess.py first."
+            )
+
+    train_scaled = pd.read_csv(splits_dir / "train_scaled.csv", index_col=0, parse_dates=True)
+    val_scaled = pd.read_csv(splits_dir / "val_scaled.csv", index_col=0, parse_dates=True)
+    test_scaled = pd.read_csv(splits_dir / "test_scaled.csv", index_col=0, parse_dates=True)
+
+    p = train_scaled.shape[1]
+
+    # Validate feature consistency across splits
+    assert list(train_scaled.columns) == list(val_scaled.columns), \
+        "Train/Val feature columns mismatch"
+    assert list(train_scaled.columns) == list(test_scaled.columns), \
+        "Train/Test feature columns mismatch"
+
+    print(f"[NOREDUCTION] Representation = identity (raw scaled features)")
+    print(f"[NOREDUCTION] Train: {train_scaled.shape} | Val: {val_scaled.shape} | Test: {test_scaled.shape}")
+    print(f"[NOREDUCTION] Features: {p} (original scaled, no dimensionality reduction)")
+
+    # Write to pca/ dir in the same CSV format forecasting expects
+    train_scaled.to_csv(pca_dir / "train_pca.csv")
+    val_scaled.to_csv(pca_dir / "val_pca.csv")
+    test_scaled.to_csv(pca_dir / "test_pca.csv")
+    print(f"[SAVED] train/val/test_pca.csv (NoReduction, {p} features)")
+
+    # Write metrics for downstream reporting
+    metrics = {
+        "input_features": p,
+        "k_optimal": p,  # output_dim == input_dim for identity
+        "cev_threshold": None,
+        "cev_achieved": None,
+        "dim_reduction_pct": 0.0,
+        "reduction_method": "none",
+    }
+    pd.Series(metrics).to_csv(pca_dir / "pca_metrics.csv", header=["value"])
+    print(f"[SAVED] pca_metrics.csv (NoReduction marker)")
+
+    # Write a minimal threshold summary (single row, no PCA thresholds)
+    thr_df = pd.DataFrame([{
+        "cev_requested": None,
+        "k": p,
+        "dim_reduction_pct": 0.0,
+        "cev_achieved": None,
+    }])
+    thr_df.to_csv(pca_dir / "pca_threshold_summary.csv", index=False)
+
+    print("\n" + "=" * 60)
+    print("NOREDUCTION PIPELINE HOÀN THÀNH")
+    print("=" * 60)
+    print(f"  Input  : {p} features (raw scaled)")
+    print(f"  Output : {p} features (identity, no reduction)")
+    print(f"  CEV    : N/A (NoReduction)")
+    print(f"  Giảm   : 0.0%")
+    print(f"\n  Bước tiếp theo: ARDL + LSTM with raw features")
+
+
+# ─────────────────────────────────────────────────────────────────
+# UNIFIED DISPATCHER
+# ─────────────────────────────────────────────────────────────────
+def run_reduction_pipeline(project_root: Path, config_path: Path) -> None:
+    """Dispatch to PCA or NoReduction based on config reduction.method."""
+    cfg = load_config(config_path)
+    reduction_cfg = cfg.get("reduction", {})
+    method = str(reduction_cfg.get("method", "pca")).lower().strip()
+
+    if method == "none":
+        run_noreduction_pipeline(project_root, config_path)
+    elif method == "pca":
+        run_pca_pipeline(project_root, config_path)
+    else:
+        raise ValueError(
+            f"Unknown reduction.method={method!r} in config. "
+            f"Supported: 'pca', 'none'."
+        )
+
+
+# ─────────────────────────────────────────────────────────────────
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="VN-Index PCA pipeline")
     p.add_argument("--config", default="config/config.yaml")

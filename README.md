@@ -168,7 +168,22 @@ Lệnh này tự động thực hiện:
 **Multi-CEV sweep** (so sánh nhiều ngưỡng PCA cùng lúc):
 
 ```bash
+#NoReduction baseline:
+python experiments/run_experiment.py --reduction none
+
+# PCA at various CEV levels:
+python experiments/run_experiment.py --reduction pca --cev 0.75
+python experiments/run_experiment.py --reduction pca --cev 0.80
+python experiments/run_experiment.py --reduction pca --cev 0.85
+python experiments/run_experiment.py --reduction pca --cev 0.90
+python experiments/run_experiment.py --reduction pca --cev 0.95
+# or
+
 python experiments/run_experiment.py --multi-cev
+
+# Compare all completed runs:
+python -m src.evaluation.compare_representations
+
 ```
 
 **Tùy chọn bổ sung:**
@@ -254,18 +269,6 @@ python experiments/run_lstm_multiseed_stability.py
 ```
 
 Refit cùng (lookback, batch_size, best_epoch) với seeds [42, 52, 62, 72, 82], report mean ± std.
-
----
-
-## Về No-PCA baseline
-
-Hiện tại project **không có sẵn** option chạy ARDL hoặc LSTM trực tiếp trên raw features (không qua PCA). Lý do:
-
-- ARDL và LSTM pipeline (`src/forecasting/ardl/`, `src/forecasting/lstm/`) đọc input từ `data/processed/pca/train_pca.csv` (PC scores) — không có code path để bypass PCA và sử dụng 318 raw scaled features trực tiếp.
-- Một `NoReduction` class (identity transform, passthrough raw features) đã được thiết kế (xem `.kiro/specs/noreduction-baseline-reducer/`) nhưng **chưa được implement** — chỉ tồn tại dưới dạng spec/plan.
-- Để chạy No-PCA baseline, cần: (1) implement `NoReduction` trong `src/reduction/`, (2) thêm config option `reduction_method: none` hoặc tương đương, (3) cập nhật `src/pca_model.py` hoặc tạo pipeline path riêng để output `train_pca.csv` chứa toàn bộ raw features thay vì PC scores.
-
-Nếu muốn so sánh PCA vs No-PCA, đây là extension work cần implement riêng.
 
 ---
 
@@ -405,7 +408,7 @@ python src/run_all.py --config configs/config.yaml
 
 ---
 
-## Dependencies chính
+## Dependencies
 
 | Package | Mục đích |
 |---|---|
@@ -419,3 +422,11 @@ python src/run_all.py --config configs/config.yaml
 | pyyaml | Config |
 | tabulate | ARDL summary tables |
 | hypothesis | Property-based testing |
+
+---
+**Author:**
+Ngo Thanh Loi, MCS Student at Duy Tan University, Vietnam
+Email: <ngothanhloi@dtu.edu.vn>
+LinkedIn: https://www.linkedin.com/in/ngo-thanh-loi/
+
+**Contribution team:**

@@ -26,14 +26,10 @@ import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR      = PROJECT_ROOT / "src"
-ARDL_DIR     = PROJECT_ROOT / "ardl"
-LSTM_DIR     = PROJECT_ROOT / "lstm"
-COMPARE_DIR  = PROJECT_ROOT / "compare"
 
 # Ensure src is on path so we can import pca_model, preprocess directly
-for d in [str(SRC_DIR), str(ARDL_DIR), str(LSTM_DIR), str(COMPARE_DIR / "..")]:
-    if d not in sys.path:
-        sys.path.insert(0, d)
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 
 def _hdr(text: str) -> None:
@@ -145,8 +141,8 @@ def run_multi_cev(config_path: Path) -> None:
         # ARDL
         print(f"\n--- ARDL (CEV={cev:.2f}) ---")
         rc = _run_subprocess(
-            [sys.executable, "run_all_ardl.py"],
-            cwd=ARDL_DIR,
+            [sys.executable, "experiments/run_ardl_experiment.py", "--config", str(temp_cfg)],
+            cwd=PROJECT_ROOT,
         )
         if rc != 0:
             print(f"[FAIL] ARDL failed for CEV={cev:.2f}")
@@ -154,8 +150,8 @@ def run_multi_cev(config_path: Path) -> None:
         # LSTM
         print(f"\n--- LSTM (CEV={cev:.2f}) ---")
         rc = _run_subprocess(
-            [sys.executable, "run_all_lstm.py"],
-            cwd=LSTM_DIR,
+            [sys.executable, "experiments/run_lstm_experiment.py"],
+            cwd=PROJECT_ROOT,
         )
         if rc != 0:
             print(f"[FAIL] LSTM failed for CEV={cev:.2f}")
@@ -163,7 +159,7 @@ def run_multi_cev(config_path: Path) -> None:
         # DM Test
         print(f"\n--- DM Test (CEV={cev:.2f}) ---")
         rc = _run_subprocess(
-            [sys.executable, "compare/run_dm_test.py"],
+            [sys.executable, "-m", "src.evaluation.run_dm_test"],
             cwd=PROJECT_ROOT,
         )
         if rc != 0:
@@ -179,20 +175,20 @@ def run_multi_cev(config_path: Path) -> None:
         print(f"\n[COMP] CEV={cev:.2f} completed in {elapsed:.0f}s")
 
     # ── Final: CEV comparison ─────────────────────────────────────
-    compare_script = COMPARE_DIR / "compare_cev_levels.py"
+    compare_script = PROJECT_ROOT / "src" / "evaluation" / "compare_representations.py"
     if compare_script.exists():
-        _hdr("FINAL: CEV comparison")
+        _hdr("FINAL: Representation comparison")
         _run_subprocess(
-            [sys.executable, "compare/compare_cev_levels.py"],
+            [sys.executable, "-m", "src.evaluation.compare_representations"],
             cwd=PROJECT_ROOT,
         )
     else:
-        print("\n[INFO] compare/compare_cev_levels.py not found — skipping comparison")
+        print("\n[INFO] compare_representations.py not found — skipping comparison")
 
     total_elapsed = time.time() - total_start
     _hdr(f"MULTI-CEV PIPELINE COMPLETE  |  {total_elapsed/60:.1f} min")
-    print(f"Results in: {PROJECT_ROOT / 'outputs'}/cev_{{0.85,0.90,0.95}}/")
-    print("Run comparison manually: python compare/compare_cev_levels.py")
+    print(f"Results in: {PROJECT_ROOT / 'outputs'}/cev_*")
+    print("Run comparison: python -m src.evaluation.compare_representations")
 
 
 def main() -> None:

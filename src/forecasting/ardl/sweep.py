@@ -138,9 +138,29 @@ def run_sweep_ardl(context: dict) -> dict:
     q_values = ardl_cfg.get("q_values", [1, 2, 3, 4, 5])
     causal = bool(ardl_cfg.get("causal", True))
     hold_back = int(ardl_cfg.get("hold_back", 5))
-    pq_pairs = [(p, q) for p in p_values for q in q_values]
 
-    print(f"[ARDL Sweep] P={p_values}  Q={q_values}  causal={causal}  hold_back={hold_back}  → {len(pq_pairs)} configs")
+    # ── NoReduction high-dimensionality safety rule ──────────────────
+    # When using raw features (reduction_method=none, typically F=318),
+    # Q>1 would produce more exogenous coefficients than effective
+    # observations, making estimation numerically inappropriate.
+    # Restrict Q=[1] for NoReduction; PCA keeps full grid unchanged.
+    config_path = project_root / "configs" / "config.yaml"
+    _reduction_method = "pca"
+    if config_path.exists():
+        with open(config_path, "r", encoding="utf-8") as _f:
+            _reduction_method = yaml.safe_load(_f).get("reduction", {}).get("method", "pca")
+
+    n_features = len(context["pc_cols"])
+    if _reduction_method == "none" and n_features > 50:
+        q_values_effective = [1]
+        print(f"[ARDL Sweep] NoReduction with {n_features} features detected — "
+              f"restricting Q=[1] (safety rule: avoid parameter explosion)")
+    else:
+        q_values_effective = q_values
+
+    pq_pairs = [(p, q) for p in p_values for q in q_values_effective]
+
+    print(f"[ARDL Sweep] P={p_values}  Q={q_values_effective}  causal={causal}  hold_back={hold_back}  → {len(pq_pairs)} configs")
 
     # Keep train and val separate — Test is intentionally excluded from this
     # stage entirely (P0-3A: "Test metrics must NOT be computed during

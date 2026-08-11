@@ -142,6 +142,11 @@ def _write_manifest(run_dir: Path, config: dict, args: argparse.Namespace,
         "config_path":  str(PROJECT_ROOT / args.config),
         "multi_cev":    args.multi_cev,
         "skip_preprocess": args.skip_preprocess,
+        "representation": {
+            "method":   config.get("reduction", {}).get("method", "pca"),
+            "cev_requested": config.get("pca", {}).get("explained_variance_threshold")
+                             if config.get("reduction", {}).get("method", "pca") == "pca" else None,
+        },
         "pca": {
             "threshold":    config.get("pca", {}).get("explained_variance_threshold"),
             "cev_thresholds": config.get("pca", {}).get("cev_thresholds"),
@@ -269,6 +274,10 @@ Examples:
                    help="Continue to next step even if one fails")
     p.add_argument("--no-collect", action="store_true",
                    help="Skip copying outputs to artifacts/ (useful for dry runs)")
+    p.add_argument("--reduction", type=str, default=None, choices=["pca", "none"],
+                   help="Override reduction.method in config (pca or none)")
+    p.add_argument("--cev", type=float, default=None,
+                   help="Override pca.explained_variance_threshold (e.g. 0.75, 0.85)")
     return p.parse_args(argv)
 
 
@@ -280,6 +289,35 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     config = _load_config(config_path)
+
+    # ── Apply CLI overrides to config (write temp file if needed) ──
+    _config_modified = False
+    if args.reduction is not None:
+        config.setdefault("reduction", {})["method"] = args.reduction
+        _config_modified = True
+    if args.cev is not None:
+        config.setdefault("pca", {})["explained_variance_threshold"] = args.cev
+        _config_modified = True
+
+    _temp_config_path = None
+    if _config_modified:
+        import copy
+        _temp_config_path = config_path.parent / f"_temp_run_override_{int(time.time())}.yaml"
+        with open(_temp_config_path, "w", encoding="utf-8") as _tf:
+            yaml.dump(config, _tf, default_flow_style=False, allow_unicode=True)
+        # Point args.config at the temp file so subprocesses read overrides
+        args.config = str(_temp_config_path)
+        print(f"[INFO] CLI overrides applied → temp config: {_temp_config_path.name}")
+
+    try:
+        _main_inner(args, config, config_path)
+    finally:
+        if _temp_config_path is not None and _temp_config_path.exists():
+            _temp_config_path.unlink(missing_ok=True)
+
+
+def _main_inner(args: argparse.Namespace, config: dict, config_path: Path) -> None:
+    """Inner main logic (separated for temp-config cleanup)."""
     cev_thresholds = config.get("pca", {}).get("cev_thresholds", [0.85, 0.90, 0.95])
 
     # Auto-detect multi-CEV from config if not set via CLI
@@ -291,10 +329,15 @@ def main(argv: list[str] | None = None) -> None:
     artifacts_base = PROJECT_ROOT / "artifacts"
     run_dir = _make_run_dir(artifacts_base)
 
-    _hdr(f"VNIndex Experiment  |  {'Multi-CEV' if args.multi_cev else 'Single-CEV'}")
+    _reduction_method = config.get("reduction", {}).get("method", "pca")
+    _hdr(f"VNIndex Experiment  |  {'Multi-CEV' if args.multi_cev else _reduction_method.upper()}")
     print(f"  Config  : {config_path}")
     print(f"  Run dir : {run_dir}")
-    print(f"  CEV     : {cev_thresholds if args.multi_cev else config.get('pca', {}).get('explained_variance_threshold')}")
+    print(f"  Representation : {_reduction_method}")
+    if _reduction_method == "pca":
+        print(f"  CEV     : {cev_thresholds if args.multi_cev else config.get('pca', {}).get('explained_variance_threshold')}")
+    else:
+        print(f"  Features: raw scaled (NoReduction, no CEV)")
 
     wall_start = time.time()
     timings: dict[str, float] = {}

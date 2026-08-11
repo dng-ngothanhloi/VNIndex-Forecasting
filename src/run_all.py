@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from pca_model import run_pca_pipeline
+from pca_model import run_pca_pipeline, run_reduction_pipeline
 from preprocess import preprocess_pipeline
 
 
@@ -54,8 +54,14 @@ def main() -> None:
     print("[STEP 1/2] Running preprocessing pipeline...")
     preprocess_pipeline(project_root=project_root, config_path=config_path)
 
-    # ── Step 2: PCA ───────────────────────────────────────────────────────────
-    if use_multi_cev:
+    # ── Step 2: Representation (PCA or NoReduction) ─────────────────────────
+    reduction_method = config.get("reduction", {}).get("method", "pca")
+
+    if reduction_method == "none":
+        # NoReduction: output raw scaled features directly
+        print("[STEP 2/2] Running NoReduction pipeline (identity representation)...")
+        run_reduction_pipeline(project_root=project_root, config_path=config_path)
+    elif use_multi_cev:
         print(f"[STEP 2/2] Running PCA pipeline for {len(cev_thresholds)} CEV thresholds: {cev_thresholds}")
         for cev in cev_thresholds:
             print(f"\n{'='*60}")
@@ -66,9 +72,6 @@ def main() -> None:
                 run_pca_pipeline(project_root=project_root, config_path=temp_cfg)
             finally:
                 temp_cfg.unlink(missing_ok=True)
-        # After all CEV runs, restore default pca output from last threshold
-        # (downstream ARDL/LSTM will read from data/processed/pca/ directly;
-        #  per-CEV copies are in data/processed/pca_cev_X.XX/ for archival)
         print(f"\n[INFO] Multi-CEV PCA complete. "
               f"Active pca/ dir reflects CEV={cev_thresholds[-1]:.2f}. "
               f"Per-CEV archives: data/processed/pca_cev_X.XX/")

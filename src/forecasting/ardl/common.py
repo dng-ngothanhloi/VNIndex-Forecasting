@@ -193,7 +193,7 @@ def load_inputs(project_root: Path):
     train_df = train_pca.join(vnindex, how="inner")
     val_df = val_pca.join(vnindex, how="inner")
     test_df = test_pca.join(vnindex, how="inner")
-    pc_cols = [c for c in train_df.columns if c.startswith("PC")]
+    pc_cols = [c for c in train_df.columns if c != "VNINDEX"]
 
     return {
         "pca_dir": pca_dir,

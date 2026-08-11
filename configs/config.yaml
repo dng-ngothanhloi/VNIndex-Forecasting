@@ -55,12 +55,19 @@ pca:
   explained_variance_threshold: 0.75  # options: 0.75 | 0.85 | 0.95
   # Multi-CEV sweep (set use_multi_cev: true to sweep all thresholds)
   use_multi_cev: false
-  cev_thresholds: [0.85, 0.90, 0.95]
+  cev_thresholds: [0.75, 0.80, 0.85, 0.90, 0.95]
   random_state: 42
   sector_mapping_file: "data/raw/symbol_sector_mapping.csv"
   sector_top_pcs: 10
   sector_top_symbols: 20
 
+# ── Representation / dimensionality reduction ─────────────────
+# Controls which representation the forecasting models receive.
+#   "pca"  → PCA with explained_variance_threshold (current default)
+#   "none" → NoReduction identity (raw scaled features, 318 columns)
+# Default is "pca" so all existing commands reproduce current pipeline.
+reduction:
+  method: pca              # pca | none
 # ── ARDL hyperparameters ─────────────────────────────────────
 ardl:
   # Grid search: all (P, Q) combinations will be swept
@@ -81,7 +88,7 @@ ardl:
   # Condition 2: always keep only models whose RMSE_val < rmse_val_thresholds
   #   (null = no guard). A filter is skipped automatically if it empties the set.
   aic_thresholds: null           # e.g. 4400.0
-  bic_thresholds: 4335.0         # e.g. 4400.0
+  bic_thresholds: 4430.0         # e.g. 4400.0
   hqic_thresholds: null          # e.g. 4380.0
   rmse_val_thresholds: 17.0      # e.g. 20.0  (out-of-sample val guard)
   # Override auto-selection with a fixed pair (set to null to use auto-selection)

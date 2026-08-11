@@ -1,0 +1,51 @@
+feat(reduction): implement NoReduction baseline + active-path integration
+
+Add NoReduction identity transform and wire it into the current forecasting
+pipeline to support PCA vs No-PCA experiment comparison.
+
+NoReduction class (src/reduction/noreduction.py):
+- Implements BaseReducer contract (fit/transform/fit_transform/get_metadata)
+- Identity transform: records feature dimensions, returns X unchanged
+- Supports both ndarray and DataFrame inputs
+- Validates fitted state and feature dimension mismatch
+
+Config integration:
+- Add reduction.method: pca|none to configs/config.yaml (default: pca)
+- Add run_noreduction_pipeline() to src/pca_model.py (outputs raw scaled
+  features to pca/ dir with original column names)
+- Add run_reduction_pipeline() dispatcher based on config
+
+Generalize feature discovery (remove PC-prefix assumption):
+- LSTM data.py: feature_cols = all columns except VNINDEX
+- ARDL common.py::load_inputs: same generalization
+- ARDL sweep.py: Q-grid restriction Q=[1] when features>50 (NoReduction
+  safety rule — prevents parameter explosion with 318 raw features)
+- ARDL diagnostics.py: limit detailed ADF output to first 50 features;
+  fix KeyError when iterating summary over untested features
+
+CLI (experiments/run_experiment.py):
+- Add --reduction pca|none and --cev <float> CLI overrides
+- Manifest includes representation.method and cev_requested metadata
+
+Multi-CEV orchestrator (src/run_all_multi_cev.py):
+- Fix FileNotFoundError: replace dead ardl/lstm/compare/ dir references
+  with canonical experiments/ entry points
+
+Comparison reader:
+- Add src/evaluation/compare_representations.py (read-only aggregation
+  of completed run artifacts into a representation comparison table)
+
+Fix LSTM data.py NameError:
+- target_col used before assignment in list comprehension — use literal
+  "VNINDEX" in filter, assign variable after
+
+Tests (30 new, all passing):
+- tests/reduction/test_noreduction.py: 20 unit tests
+- tests/reduction/test_noreduction_integration.py: 10 integration tests
+- Full suite: 118 tests pass, no regressions
+- PCA regression gate confirmed: p=318, k=2, CEV=78.47%
+
+Commands:
+  python experiments/run_experiment.py --reduction none
+  python experiments/run_experiment.py --reduction pca --cev 0.75
+  python -m src.evaluation.compare_representations
