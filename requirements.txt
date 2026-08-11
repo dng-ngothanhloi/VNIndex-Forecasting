@@ -1,0 +1,41 @@
+# =============================================================================
+# VNIndexPredictor – Python dependencies
+# Python 3.11+ | macOS Apple Silicon (arm64)
+#
+# Cài đặt:  pip install -r requirements.txt
+#
+# TensorFlow: Dùng local_setup_env.sh để tự động xử lý đúng build cho platform.
+# Trên macOS Apple Silicon (M1/M2/M3), script sẽ thay thế bằng tensorflow-macos.
+# =============================================================================
+
+# ── Core ──────────────────────────────────────────────────────────
+numpy==1.26.4
+pandas==2.3.0
+scipy==1.15.3
+
+# ── Machine Learning ─────────────────────────────────────────────
+scikit-learn==1.3.2
+statsmodels==0.14.6
+
+# ── Deep Learning ────────────────────────────────────────────────
+# Trên macOS arm64: pip install -r requirements.txt sẽ cài tensorflow==2.21.0
+# nhưng có lỗi Metal Plugin. Dùng local_setup_env.sh để tự fix, hoặc thay thủ công:
+#   pip uninstall -y tensorflow tensorflow-metal
+#   pip install tensorflow-macos==2.16.2
+tensorflow==2.16.2
+protobuf>=4.21.5,<5.0.0dev
+
+# ── Visualization ────────────────────────────────────────────────
+matplotlib==3.8.2
+tabulate==0.10.0
+
+# ── Configuration ────────────────────────────────────────────────
+pyyaml==6.0.2
+
+# ── Utilities ────────────────────────────────────────────────────
+joblib==1.5.1
+
+# visualization
+matplotlib==3.8.2
+tabulate==0.10.0
+seaborn>=0.13.0

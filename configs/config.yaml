@@ -1,0 +1,119 @@
+paths:
+  raw_file: "data/raw/Data_VNINDEX.csv"
+  artifacts_dir: "data/processed"   # unified path for all outputs
+  models_dir: "models"
+  figures_dir: "logs/figures"
+  use_timestamp_subdir: false        # set true to create yyyymmdd_hhmmss subfolder per run
+  artifacts_subdirs:
+    core: "core"
+    quality: "quality"
+    splits: "splits"
+    stationarity: "stationarity"
+    pca: "pca"
+
+columns:
+  date: "Ngày"
+  symbol: "Symbol"
+  close: "Lần cuối"
+  open: "Mở"
+  high: "Cao"
+  low: "Thấp"
+  volume: "KL"
+  pct_change: "% Thay đổi"
+  numeric:
+    - "Lần cuối"
+    - "Mở"
+    - "Cao"
+    - "Thấp"
+    - "KL"
+
+preprocess:
+  start_date: "2022-01-01"
+  end_date: "2025-04-30"
+  remove_weekends: true
+  outlier_k: 1.5
+  missing_threshold: 0.2
+  # ── Split strategy ──────────────────────────────────────────
+  # P0-1 scientific correction: switched to non-overlap split so Val and
+  # Test are disjoint, chronological windows (no data reused between the
+  # two). For N=826 this yields Train=536 / Val=123 / Test=167.
+  train_ratio: 0.65
+  val_ratio: 0.15           # used directly when use_overlap_val=false (non-overlap branch)
+  use_overlap_val: false   # false → train/val/test are disjoint chronological splits (see helpers.utils.split_by_time)
+  val_overlap_ratio: 0.20   # fraction of train used for overlap-val (only read when use_overlap_val=true; unused now)
+  # test_ratio is INFORMATIONAL ONLY in the non-overlap branch: the non-overlap
+  # splitter (helpers.utils.split_by_time / helpers.split_utils.split_time_series_nonoverlap)
+  # derives test as the remainder after train_ratio+val_ratio are applied
+  # (test = 1 - train_ratio - val_ratio = 0.20 here); this key is not read by
+  # that code path. It IS read when use_overlap_val=true (ignored otherwise).
+  test_ratio: 0.20
+  # ─────────────────────────────────────────────────────────────
+  stationarity_sample_size: 30
+  stationarity_after_diff_sample_size: 10
+
+pca:
+  explained_variance_threshold: 0.75  # options: 0.75 | 0.85 | 0.95
+  # Multi-CEV sweep (set use_multi_cev: true to sweep all thresholds)
+  use_multi_cev: false
+  cev_thresholds: [0.85, 0.90, 0.95]
+  random_state: 42
+  sector_mapping_file: "data/raw/symbol_sector_mapping.csv"
+  sector_top_pcs: 10
+  sector_top_symbols: 20
+
+# ── ARDL hyperparameters ─────────────────────────────────────
+ardl:
+  # Grid search: all (P, Q) combinations will be swept
+  # P0-2 scientific correction: causal=True (no PC.L0) + fixed hold_back=5
+  # https://www.statsmodels.org/stable/generated/statsmodels.tsa.ardl.ARDL.html#statsmodels.tsa.ardl.ARDL.__init__.hold_back
+  # means q=0 (contemporaneous-only exog) is no longer a valid ARDL(P,0)
+  # candidate — q now indexes the exog lag depth PC.L1..PC.Lq. q_values
+  # therefore starts at 1, not 0.
+  p_values: [1, 2, 3, 4, 5]     # AR lags to sweep
+  q_values: [1, 2, 3, 4, 5]     # exog lag depth to sweep (PC.L1..PC.Lq); no q=0 (no PC.L0 under causal=True)
+  causal: true                  # exclude contemporaneous PC.L0 (information boundary: only t-1 and earlier predicts y(t))
+  hold_back: 5                  # fixed across all (p,q) candidates for fair IC comparison (max grid lag = 5)
+  # Model selection after sweep
+  selection_criterion: "BIC"          # options: AIC | BIC | HQIC | RMSE_val | MAE_val | RMSE_test | MAE_test
+  # ── Two-condition selection thresholds ───────────────────────
+  # Condition 1: when selection_criterion is AIC/BIC/HQIC, keep only models
+  #   whose criterion value < the matching threshold below (null = no cap).
+  # Condition 2: always keep only models whose RMSE_val < rmse_val_thresholds
+  #   (null = no guard). A filter is skipped automatically if it empties the set.
+  aic_thresholds: null           # e.g. 4400.0
+  bic_thresholds: 4335.0         # e.g. 4400.0
+  hqic_thresholds: null          # e.g. 4380.0
+  rmse_val_thresholds: 17.0      # e.g. 20.0  (out-of-sample val guard)
+  # Override auto-selection with a fixed pair (set to null to use auto-selection)
+  selected_pair: null            # e.g. [5, 2] to hardcode, or null for auto
+  # Ensemble: average predictions of top-N models
+  use_ensemble: false            # true → ensemble top_n models by ensemble_criterion
+  ensemble_top_n: 3              # number of models to average
+  ensemble_criterion: "RMSE_val" # criterion to rank models for ensemble
+
+# ── LSTM hyperparameters ─────────────────────────────────────
+lstm:
+  # Sweep grid – all combinations will be trained
+  lookback_values: [20, 30, 40, 50, 60]
+  batch_size_values: [16, 32]
+  epochs: 150
+  # Optimizer
+  learning_rate: 0.0001          # 1e-4 (reduced from 1e-3)
+  # Callbacks
+  early_stopping_patience: 25    # increased from 15; set higher when use_overlap_val=true
+  reduce_lr_patience: 10         # increased from 7
+  reduce_lr_factor: 0.5
+  min_lr: 0.000001               # 1e-6
+  min_delta: 0.0001              # minimum improvement to count as progress
+  # Overlap-val mitigation
+  overlap_patience_multiplier: 2.0  # multiply patience when use_overlap_val=true
+  min_epochs: 30                 # refuse early-stop before this epoch
+  # Architecture
+  lstm_units: [64, 32]           # layer sizes
+  dense_units: [16]
+  dropout_rate: 0.2
+  use_batch_norm: false          # true → add BatchNormalization after each LSTM layer
+  # Export selection: which (lookback, batch_size) to treat as "the" selected model
+  # Set both to null to auto-pick lowest Val_RMSE from the sweep
+  export_lookback: null          # e.g. 45, or null for auto
+  export_batch_size: null        # e.g. 16, or null for auto
