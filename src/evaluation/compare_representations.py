@@ -148,7 +148,12 @@ def _load_dm_results(run_dir: Path) -> dict:
 
 
 def collect_run_results(artifacts_dir: Path) -> pd.DataFrame:
-    """Scan all Run_* directories and aggregate results into a table."""
+    """Scan all Run_* directories and aggregate results into a table.
+    
+    Only includes runs with status=OK. When multiple runs exist for the
+    same (representation, cev_requested) combination, keeps only the
+    LATEST one (by directory name timestamp).
+    """
     rows = []
 
     run_dirs = sorted(artifacts_dir.glob("Run_*"))
@@ -165,12 +170,15 @@ def collect_run_results(artifacts_dir: Path) -> pd.DataFrame:
 
         # Determine representation
         repr_info = manifest.get("representation", {})
-        method = repr_info.get("method", manifest.get("pca", {}).get("threshold", "pca"))
-        if isinstance(method, float):
+        method = repr_info.get("method")
+        # Fallback for old manifests without representation field
+        if method is None:
             method = "pca"
 
-        cev_requested = repr_info.get("cev_requested",
-                                       manifest.get("pca", {}).get("threshold"))
+        cev_requested = repr_info.get("cev_requested")
+        # Fallback for old manifests
+        if cev_requested is None and method == "pca":
+            cev_requested = manifest.get("pca", {}).get("threshold")
 
         pca_metrics = _load_pca_metrics(run_dir)
         ardl_info = _load_ardl_test_rmse(run_dir)
@@ -179,7 +187,7 @@ def collect_run_results(artifacts_dir: Path) -> pd.DataFrame:
 
         row = {
             "run": run_dir.name,
-            "representation": method if method else "pca",
+            "representation": method,
             "cev_requested": cev_requested,
             "k": pca_metrics.get("k_optimal"),
             "dim_reduction_pct": pca_metrics.get("dim_reduction_pct"),
@@ -194,9 +202,15 @@ def collect_run_results(artifacts_dir: Path) -> pd.DataFrame:
 
     df = pd.DataFrame(rows)
 
+    # Deduplicate: keep only latest run per (representation, cev_requested)
+    # Since run dirs are sorted by timestamp, last one wins.
+    df["_key"] = df["representation"].astype(str) + "_" + df["cev_requested"].astype(str)
+    df = df.drop_duplicates(subset=["_key"], keep="last").drop(columns=["_key"])
+
     # Sort: none first, then by cev_requested ascending
-    df["_sort"] = df["cev_requested"].fillna(-1).astype(float)
-    df = df.sort_values(["representation", "_sort"]).drop(columns=["_sort"])
+    df["_sort_method"] = df["representation"].map({"none": 0, "pca": 1}).fillna(2)
+    df["_sort_cev"] = df["cev_requested"].fillna(-1).astype(float)
+    df = df.sort_values(["_sort_method", "_sort_cev"]).drop(columns=["_sort_method", "_sort_cev"])
 
     return df
 
@@ -207,26 +221,38 @@ def print_comparison_table(df: pd.DataFrame) -> None:
         print("[INFO] No completed runs found to compare.")
         return
 
+    # Map representation to readable labels
+    df = df.copy()
+    df["label"] = df.apply(
+        lambda r: "no_dr" if r["representation"] == "none"
+        else f"cev_{r['cev_requested']:.2f}" if pd.notna(r["cev_requested"])
+        else "pca_unknown",
+        axis=1,
+    )
+
     # Select display columns
     display_cols = [
-        "representation", "cev_requested", "k", "dim_reduction_pct",
+        "label", "representation", "cev_requested", "k", "dim_reduction_pct",
         "ARDL_RMSE", "LSTM_RMSE", "ARDL_MAE", "LSTM_MAE",
         "ARDL_R2", "LSTM_R2", "DM_MSE_p", "DM_MAE_p",
     ]
     display_cols = [c for c in display_cols if c in df.columns]
 
-    print("\n" + "=" * 100)
+    print("\n" + "=" * 110)
     print("  REPRESENTATION COMPARISON TABLE")
-    print("=" * 100)
-    print(df[display_cols].to_string(index=False, float_format="%.4f"))
-    print("=" * 100)
+    print("  (Each row = latest successful run per representation/CEV combination)")
+    print("=" * 110)
+    print(df[display_cols].to_string(index=False))
+    print("=" * 110)
 
     # Additional detail columns if available
-    detail_cols = ["ARDL_P", "ARDL_Q", "LSTM_LB", "LSTM_BS", "LSTM_best_epoch"]
+    detail_cols = ["ARDL_P", "ARDL_Q", "LSTM_LB", "LSTM_BS", "LSTM_best_epoch", "ARDL_N", "LSTM_N"]
     detail_cols = [c for c in detail_cols if c in df.columns]
     if detail_cols:
         print("\n  MODEL SELECTION DETAIL:")
-        print(df[["representation", "cev_requested"] + detail_cols].to_string(index=False))
+        print(df[["label"] + detail_cols].to_string(index=False))
+
+    print(f"\n  Source: {len(df)} unique (representation, cev) combinations from artifacts/Run_*/")
     print()
 
 

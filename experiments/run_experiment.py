@@ -257,15 +257,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python experiments/run_experiment.py                     # full single-CEV run
-  python experiments/run_experiment.py --multi-cev         # CEV sweep [0.85, 0.90, 0.95]
-  python experiments/run_experiment.py --skip-preprocess   # re-run models only
-  python experiments/run_experiment.py --skip-ardl --skip-lstm  # DM test only
+  python experiments/run_experiment.py                        # full single-CEV run (default PCA)
+  python experiments/run_experiment.py --reduction none       # NoReduction baseline
+  python experiments/run_experiment.py --reduction pca --cev 0.85  # PCA at specific CEV
+  python experiments/run_experiment.py --full-sweep           # NoReduction + all CEV levels (separate runs)
+  python experiments/run_experiment.py --multi-cev            # legacy multi-CEV (run_all_multi_cev.py)
+  python experiments/run_experiment.py --skip-preprocess      # re-run models only
         """,
     )
     p.add_argument("--config", default="configs/config.yaml")
     p.add_argument("--multi-cev", action="store_true",
                    help="Run multi-CEV sweep (delegates to run_all_multi_cev.py)")
+    p.add_argument("--full-sweep", action="store_true",
+                   help="Run NoReduction + all PCA CEV levels as separate sequenced runs "
+                        "(each gets its own artifacts/Run_* snapshot)")
     p.add_argument("--skip-preprocess", action="store_true")
     p.add_argument("--skip-ardl", action="store_true")
     p.add_argument("--skip-lstm", action="store_true")
@@ -309,11 +314,62 @@ def main(argv: list[str] | None = None) -> None:
         args.config = str(_temp_config_path)
         print(f"[INFO] CLI overrides applied → temp config: {_temp_config_path.name}")
 
+    # Full sweep mode: run NoReduction + all CEV levels as separate runs
+    if args.full_sweep:
+        _run_full_sweep(args, config, config_path)
+        return
+
     try:
         _main_inner(args, config, config_path)
     finally:
         if _temp_config_path is not None and _temp_config_path.exists():
             _temp_config_path.unlink(missing_ok=True)
+
+
+def _run_full_sweep(args: argparse.Namespace, config: dict, config_path: Path) -> None:
+    """Run NoReduction + all PCA CEV levels as separate sequenced runs.
+    
+    Each (representation, cev) combination produces its own artifacts/Run_*
+    snapshot with a clear manifest, so compare_representations can identify
+    each unambiguously. Preprocessing is shared (run once at the start).
+    """
+    cev_thresholds = config.get("pca", {}).get("cev_thresholds", [0.75, 0.80, 0.85, 0.90, 0.95])
+    
+    # Build the sequence: NoReduction first, then each CEV
+    sweep_configs = [("none", None)] + [("pca", cev) for cev in cev_thresholds]
+    
+    _hdr(f"FULL SWEEP: {len(sweep_configs)} representations")
+    print(f"  Sequence: no_dr, " + ", ".join(f"cev_{c:.2f}" for _, c in sweep_configs[1:]))
+    print(f"  Each produces a separate artifacts/Run_* with manifest identification.")
+    print()
+    
+    wall_start = time.time()
+    results = []
+    
+    for i, (method, cev) in enumerate(sweep_configs, 1):
+        label = "no_dr" if method == "none" else f"cev_{cev:.2f}"
+        _hdr(f"SWEEP {i}/{len(sweep_configs)}: {label}")
+        
+        # Build CLI args for a single run
+        run_args = [sys.executable, "experiments/run_experiment.py",
+                    "--config", str(config_path),
+                    "--reduction", method]
+        if cev is not None:
+            run_args += ["--cev", str(cev)]
+        # Skip preprocess after first run (shared preprocessed data)
+        if i > 1:
+            run_args.append("--skip-preprocess")
+        
+        rc = _run(run_args, cwd=PROJECT_ROOT, label=label)
+        status = "OK" if rc == 0 else "FAILED"
+        results.append((label, status))
+        print(f"\n  [{status}] {label}")
+    
+    elapsed = time.time() - wall_start
+    _hdr(f"FULL SWEEP COMPLETE  |  {elapsed/60:.1f} min")
+    for label, status in results:
+        print(f"  [{status}] {label}")
+    print(f"\n  Compare results: python -m src.evaluation.compare_representations")
 
 
 def _main_inner(args: argparse.Namespace, config: dict, config_path: Path) -> None:

@@ -168,7 +168,13 @@ Lệnh này tự động thực hiện:
 **Multi-CEV sweep** (so sánh nhiều ngưỡng PCA cùng lúc):
 
 ```bash
-#NoReduction baseline:
+# Recommended: full experiment sweep (each run isolated in artifacts/)
+python experiments/run_experiment.py --full-sweep
+
+# Then compare:
+python -m src.evaluation.compare_representations
+
+# Individual runs (still work):
 python experiments/run_experiment.py --reduction none
 
 # PCA at various CEV levels:
@@ -177,10 +183,6 @@ python experiments/run_experiment.py --reduction pca --cev 0.80
 python experiments/run_experiment.py --reduction pca --cev 0.85
 python experiments/run_experiment.py --reduction pca --cev 0.90
 python experiments/run_experiment.py --reduction pca --cev 0.95
-# or
-
-python experiments/run_experiment.py --multi-cev
-
 # Compare all completed runs:
 python -m src.evaluation.compare_representations
 
