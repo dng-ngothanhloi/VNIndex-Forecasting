@@ -1,42 +1,41 @@
 """
 run_experiment.py – Unified experiment entry point (canonical)
 ====================================================================
-Runs the full VN-Index research pipeline: preprocess+PCA -> ARDL ->
-LSTM -> Diebold-Mariano comparison. Replaces the former run_pipeline.py
-as the canonical orchestration layer; run_pipeline.py is now a thin
-backward-compatible shim that imports this module.
+Runs the full VN-Index research pipeline: preprocess+representation ->
+ARDL -> LSTM -> Diebold-Mariano comparison.
 
-All outputs are collected under artifacts/Run_<YYYYMMDD_HHMMSS>/
+Artifact structure (unified for single and sweep runs):
+  artifacts/Run_<YYYYMMDD_HHMMSS>/
+  ├── sweep_manifest.json           (sweep metadata)
+  ├── no_dr/                        (child: NoReduction)
+  │   ├── run_manifest.json
+  │   ├── results/run_summary.json
+  │   ├── config/effective_config.yaml
+  │   ├── data/processed/...
+  │   ├── models/...
+  │   ├── outputs/...
+  │   └── logs/...
+  ├── pca_cev_0.75/                 (child: PCA CEV=0.75)
+  │   └── ...
+  └── comparison/                   (aggregated results)
+      └── representation_comparison.csv
 
 Usage
 -----
-  # Standard single-CEV run (default):
-  python experiments/run_experiment.py
+  # Single run (one label inside one Run_*):
+  python experiments/run_experiment.py --reduction pca --cev 0.75
 
-  # Multi-CEV sweep across [0.85, 0.90, 0.95]:
-  python experiments/run_experiment.py --multi-cev
+  # Full sweep (NoReduction + all CEV levels, one Run_*):
+  python experiments/run_experiment.py --full-sweep
 
-  # Custom config:
-  python experiments/run_experiment.py --config configs/config.yaml
-
-  # Skip steps you've already run:
-  python experiments/run_experiment.py --skip-preprocess
-
-Flow
-----
-  [1] Preprocess + PCA          -> src/run_all.py
-  [2] ARDL grid search          -> experiments/run_ardl_experiment.py
-  [3] LSTM sweep                -> experiments/run_lstm_experiment.py
-  [4] Diebold-Mariano test      -> src/evaluation/run_dm_test.py
-  [5] Copy everything           -> artifacts/Run_<timestamp>/
-  [6] Write run_manifest.json
-
-  For --multi-cev, steps [1]-[5] are wrapped by src/run_all_multi_cev.py
+  # Compare results from a sweep:
+  python -m src.evaluation.compare_representations --run-dir artifacts/Run_<ts>
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import shutil
 import subprocess
@@ -45,6 +44,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -80,171 +81,399 @@ def _load_config(config_path: Path) -> dict:
         return yaml.safe_load(f)
 
 
-# ── Output collection ────────────────────────────────────────────────────────
+def _label_for(method: str, cev: float | None) -> str:
+    """Deterministic label for a representation config."""
+    if method == "none":
+        return "no_dr"
+    if cev is not None:
+        return f"pca_cev_{cev:.2f}"
+    return "pca_unknown"
 
-# Directories produced by each pipeline step
-_PIPELINE_OUTPUTS = [
-    # preprocess / PCA
+
+# ── Mutable output dirs produced by pipeline steps ───────────────────────────
+_MUTABLE_OUTPUT_DIRS = [
     "data/processed",
     "models",
     "logs/figures",
-    # ARDL
     "outputs/ardl_vnindex_pca_sweep",
     "outputs/ardl_vnindex_forecast",
-    # LSTM
+    "outputs/ardl_vnindex_report",
     "outputs/lstm_vnindex_sweep",
-    # DM Test
     "outputs/model_comparison",
-    # Multi-CEV
-    "outputs/cev_comparison",
 ]
 
 
-def _collect_outputs(run_dir: Path, multi_cev: bool, cev_thresholds: list[float]) -> None:
-    """
-    Copy pipeline outputs into run_dir, preserving sub-structure.
-    Multi-CEV results are under outputs/cev_{x}/...
-    """
-    _hdr(f"Collecting outputs -> {run_dir}")
+def _clean_mutable_outputs() -> None:
+    """Remove known mutable outputs before a child run to prevent stale data."""
+    for rel in _MUTABLE_OUTPUT_DIRS:
+        p = PROJECT_ROOT / rel
+        if p.exists():
+            shutil.rmtree(p)
 
-    dirs_to_copy = list(_PIPELINE_OUTPUTS)
-    if multi_cev:
-        for cev in cev_thresholds:
-            dirs_to_copy.append(f"outputs/cev_{cev:.2f}")
 
-    copied, skipped = 0, 0
-    for rel in dirs_to_copy:
+def _snapshot_child(child_dir: Path) -> None:
+    """Copy mutable outputs into the child snapshot directory."""
+    for rel in _MUTABLE_OUTPUT_DIRS:
         src = PROJECT_ROOT / rel
         if not src.exists():
-            print(f"  [SKIP] {rel}  (not found)")
-            skipped += 1
             continue
-        dst = run_dir / rel
+        dst = child_dir / rel
         if dst.exists():
             shutil.rmtree(dst)
-        if src.is_dir():
-            shutil.copytree(src, dst)
-        else:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-        print(f"  [OK]   {rel}")
-        copied += 1
-
-    print(f"\nCopied {copied} directories, skipped {skipped}.")
+        shutil.copytree(src, dst)
 
 
-def _write_manifest(run_dir: Path, config: dict, args: argparse.Namespace,
-                    timings: dict, failed_steps: list[str]) -> None:
-    """Write run_manifest.json summarising the run."""
-    manifest = {
-        "run_dir":      str(run_dir),
-        "timestamp":    run_dir.name,
-        "config_path":  str(PROJECT_ROOT / args.config),
-        "multi_cev":    args.multi_cev,
-        "skip_preprocess": args.skip_preprocess,
-        "representation": {
-            "method":   config.get("reduction", {}).get("method", "pca"),
-            "cev_requested": config.get("pca", {}).get("explained_variance_threshold")
-                             if config.get("reduction", {}).get("method", "pca") == "pca" else None,
-        },
-        "pca": {
-            "threshold":    config.get("pca", {}).get("explained_variance_threshold"),
-            "cev_thresholds": config.get("pca", {}).get("cev_thresholds"),
-        },
-        "preprocess": {
-            "train_ratio":      config.get("preprocess", {}).get("train_ratio"),
-            "val_ratio":        config.get("preprocess", {}).get("val_ratio"),
-            "use_overlap_val":  config.get("preprocess", {}).get("use_overlap_val"),
-            "test_ratio":       config.get("preprocess", {}).get("test_ratio"),
-        },
-        "ardl": {
-            "selection_criterion": config.get("ardl", {}).get("selection_criterion"),
-            "selected_pair":       config.get("ardl", {}).get("selected_pair"),
-            "use_ensemble":        config.get("ardl", {}).get("use_ensemble"),
-        },
-        "lstm": {
-            "lookback_values":  config.get("lstm", {}).get("lookback_values"),
-            "batch_size_values": config.get("lstm", {}).get("batch_size_values"),
-            "learning_rate":    config.get("lstm", {}).get("learning_rate"),
-            "epochs":           config.get("lstm", {}).get("epochs"),
-            "use_batch_norm":   config.get("lstm", {}).get("use_batch_norm"),
-        },
-        "timings_seconds": timings,
-        "failed_steps":    failed_steps,
-        "status":          "FAILED" if failed_steps else "OK",
-    }
-    out = run_dir / "run_manifest.json"
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2, default=str)
-    print(f"\n[COMP] Manifest: {out}")
+def _read_pca_metrics() -> dict:
+    """Read pca_metrics.csv from the live data/processed/pca/ after a run."""
+    metrics_path = PROJECT_ROOT / "data" / "processed" / "pca" / "pca_metrics.csv"
+    if not metrics_path.exists():
+        return {}
+    try:
+        df = pd.read_csv(metrics_path, index_col=0)
+        return df["value"].to_dict()
+    except Exception:
+        return {}
 
 
-# ── Single-CEV flow ───────────────────────────────────────────────────────────
+def _read_ardl_summary() -> dict:
+    """Read ARDL test metrics from forecast artifacts."""
+    forecast_path = PROJECT_ROOT / "outputs" / "ardl_vnindex_forecast" / "chapter4_ardl_forecast.csv"
+    info: dict = {}
+    if forecast_path.exists():
+        try:
+            df = pd.read_csv(forecast_path)
+            if "Actual_VNINDEX" in df.columns and "Predicted_VNINDEX" in df.columns:
+                from sklearn.metrics import mean_absolute_error, r2_score
+                actual = df["Actual_VNINDEX"].values
+                pred = df["Predicted_VNINDEX"].values
+                res = actual - pred
+                info["ARDL_RMSE"] = float(np.sqrt(np.mean(res ** 2)))
+                info["ARDL_MAE"] = float(mean_absolute_error(actual, pred))
+                info["ARDL_MAPE"] = float(np.mean(np.abs(res / (actual + 1e-8))) * 100)
+                info["ARDL_R2"] = float(r2_score(actual, pred))
+                info["ARDL_N"] = len(df)
+        except Exception:
+            pass
+    # Selected pair from sweep
+    sweep_path = PROJECT_ROOT / "outputs" / "ardl_vnindex_pca_sweep" / "sweep_results.csv"
+    if sweep_path.exists():
+        try:
+            sweep = pd.read_csv(sweep_path)
+            ok = sweep[sweep["Status"] == "OK"]
+            if not ok.empty:
+                best = ok.loc[ok["BIC"].idxmin()]
+                info["ARDL_P"] = int(best["P"])
+                info["ARDL_Q"] = int(best["Q"])
+        except Exception:
+            pass
+    return info
 
-def run_single_cev(args: argparse.Namespace, config: dict,
-                   run_dir: Path) -> list[str]:
-    """
-    Run preprocess -> ARDL -> LSTM -> DM test sequentially.
-    Returns list of failed step names.
-    """
-    failed: list[str] = []
-    py = sys.executable
-    cfg = str(PROJECT_ROOT / args.config)
 
-    steps: list[tuple[str, list[str], Path | None]] = []
-
-    if not args.skip_preprocess:
-        steps.append((
-            "Preprocess + PCA",
-            [py, "src/run_all.py", "--config", cfg],
-            PROJECT_ROOT,
-        ))
-
-    if not args.skip_ardl:
-        steps.append((
-            "ARDL",
-            [py, "experiments/run_ardl_experiment.py", "--config", cfg],
-            PROJECT_ROOT,
-        ))
-
-    if not args.skip_lstm:
-        steps.append((
-            "LSTM",
-            [py, "experiments/run_lstm_experiment.py"],
-            PROJECT_ROOT,
-        ))
-
-    if not args.skip_dm:
-        steps.append((
-            "DM Test",
-            [py, "-m", "src.evaluation.run_dm_test"],
-            PROJECT_ROOT,
-        ))
-
-    for label, cmd, cwd in steps:
-        _hdr(f"STEP: {label}")
-        rc = _run(cmd, cwd=cwd, label=label)
-        if rc != 0:
-            print(f"\n[FAIL] {label} failed (exit code {rc})")
-            failed.append(label)
-            if not args.continue_on_error:
-                print("Stopping pipeline. Use --continue-on-error to skip failures.")
+def _read_lstm_summary() -> dict:
+    """Read LSTM test metrics from sweep artifacts."""
+    lstm_dir = PROJECT_ROOT / "outputs" / "lstm_vnindex_sweep"
+    info: dict = {}
+    summary_path = lstm_dir / "sweep_summary.csv"
+    if summary_path.exists():
+        try:
+            summary = pd.read_csv(summary_path)
+            best_row = summary.loc[summary["Val_RMSE"].idxmin()]
+            info["LSTM_LB"] = int(best_row["Lookback"])
+            info["LSTM_BS"] = int(best_row["Batch_size"])
+            info["LSTM_best_epoch"] = int(best_row["Best_Epoch"])
+        except Exception:
+            pass
+    for pred_file in sorted(lstm_dir.glob("predictions_lookback_*.csv")):
+        try:
+            df = pd.read_csv(pred_file)
+            if "Actual_VNINDEX" in df.columns and "Predicted_VNINDEX" in df.columns:
+                from sklearn.metrics import mean_absolute_error, r2_score
+                actual = df["Actual_VNINDEX"].values
+                pred = df["Predicted_VNINDEX"].values
+                res = actual - pred
+                info["LSTM_RMSE"] = float(np.sqrt(np.mean(res ** 2)))
+                info["LSTM_MAE"] = float(mean_absolute_error(actual, pred))
+                info["LSTM_MAPE"] = float(np.mean(np.abs(res / (actual + 1e-8))) * 100)
+                info["LSTM_R2"] = float(r2_score(actual, pred))
+                info["LSTM_N"] = len(df)
                 break
+        except Exception:
+            continue
+    return info
+
+
+def _read_dm_summary() -> dict:
+    """Read DM test p-values."""
+    dm_path = PROJECT_ROOT / "outputs" / "model_comparison" / "dm_test_results.csv"
+    if not dm_path.exists():
+        return {}
+    try:
+        dm = pd.read_csv(dm_path)
+        info: dict = {}
+        for _, row in dm.iterrows():
+            loss = row.get("Loss_Type", "")
+            if loss == "MSE":
+                info["DM_MSE_p"] = row.get("p_value")
+            elif loss == "MAE":
+                info["DM_MAE_p"] = row.get("p_value")
+        return info
+    except Exception:
+        return {}
+
+
+# ── Child execution ──────────────────────────────────────────────────────────
+
+def _run_child(label: str, method: str, cev: float | None,
+               parent_run_dir: Path, config: dict, config_path: Path) -> str:
+    """Execute one child run (preprocess+repr → ARDL → LSTM → DM).
+    
+    Returns status: "OK" or "FAILED".
+    """
+    child_dir = parent_run_dir / label
+    child_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write effective config for this child
+    child_config = copy.deepcopy(config)
+    child_config.setdefault("reduction", {})["method"] = method
+    if cev is not None:
+        child_config.setdefault("pca", {})["explained_variance_threshold"] = cev
+
+    config_dir = child_dir / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    effective_cfg_path = config_dir / "effective_config.yaml"
+    with open(effective_cfg_path, "w", encoding="utf-8") as f:
+        yaml.dump(child_config, f, default_flow_style=False, allow_unicode=True)
+
+    # Write temp config for subprocesses
+    temp_cfg_path = config_path.parent / f"_temp_{label}_{int(time.time())}.yaml"
+    with open(temp_cfg_path, "w", encoding="utf-8") as f:
+        yaml.dump(child_config, f, default_flow_style=False, allow_unicode=True)
+
+    py = sys.executable
+    failed_steps: list[str] = []
+    t0 = time.time()
+
+    try:
+        # Clean mutable outputs to prevent stale data from previous child
+        _clean_mutable_outputs()
+
+        # Step 1: Preprocess + Representation (ALWAYS run — each child needs its own repr)
+        _hdr(f"[{label}] Preprocess + Representation")
+        rc = _run([py, "src/run_all.py", "--config", str(temp_cfg_path)],
+                  cwd=PROJECT_ROOT, label=f"{label}: Preprocess+Repr")
+        if rc != 0:
+            failed_steps.append("Preprocess+Repr")
+
+        # Step 2: ARDL
+        if not failed_steps:
+            _hdr(f"[{label}] ARDL")
+            rc = _run([py, "experiments/run_ardl_experiment.py", "--config", str(temp_cfg_path)],
+                      cwd=PROJECT_ROOT, label=f"{label}: ARDL")
+            if rc != 0:
+                failed_steps.append("ARDL")
+
+        # Step 3: LSTM
+        if not failed_steps:
+            _hdr(f"[{label}] LSTM")
+            rc = _run([py, "experiments/run_lstm_experiment.py"],
+                      cwd=PROJECT_ROOT, label=f"{label}: LSTM")
+            if rc != 0:
+                failed_steps.append("LSTM")
+
+        # Step 4: DM Test
+        if not failed_steps:
+            _hdr(f"[{label}] DM Test")
+            rc = _run([py, "-m", "src.evaluation.run_dm_test"],
+                      cwd=PROJECT_ROOT, label=f"{label}: DM")
+            if rc != 0:
+                failed_steps.append("DM")
+
+    finally:
+        temp_cfg_path.unlink(missing_ok=True)
+
+    elapsed = time.time() - t0
+    status = "FAILED" if failed_steps else "OK"
+
+    # Snapshot mutable outputs into child dir
+    _snapshot_child(child_dir)
+
+    # Read actual metrics from live outputs (before next child cleans them)
+    pca_metrics = _read_pca_metrics()
+    ardl_summary = _read_ardl_summary()
+    lstm_summary = _read_lstm_summary()
+    dm_summary = _read_dm_summary()
+
+    # Write child run_summary.json
+    results_dir = child_dir / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    run_summary = {
+        "label": label,
+        "status": status,
+        "failed_steps": failed_steps,
+        "elapsed_seconds": round(elapsed, 1),
+        "representation": {
+            "method": method,
+            "cev_requested": cev,
+            "cev_achieved": pca_metrics.get("cev_achieved"),
+            "p_original": pca_metrics.get("input_features"),
+            "k_actual": pca_metrics.get("k_optimal"),
+            "dim_reduction_pct": pca_metrics.get("dim_reduction_pct"),
+        },
+        "ardl": ardl_summary,
+        "lstm": lstm_summary,
+        "dm": dm_summary,
+    }
+    with open(results_dir / "run_summary.json", "w", encoding="utf-8") as f:
+        json.dump(run_summary, f, indent=2, default=str)
+
+    # Write child run_manifest.json
+    child_manifest = {
+        "parent_run_id": parent_run_dir.name,
+        "label": label,
+        "status": status,
+        "effective_config_path": str(effective_cfg_path.relative_to(parent_run_dir)),
+        "summary_path": str((results_dir / "run_summary.json").relative_to(parent_run_dir)),
+        "representation": run_summary["representation"],
+        "elapsed_seconds": round(elapsed, 1),
+        "failed_steps": failed_steps,
+    }
+    with open(child_dir / "run_manifest.json", "w", encoding="utf-8") as f:
+        json.dump(child_manifest, f, indent=2, default=str)
+
+    print(f"\n  [{status}] {label}  ({elapsed:.0f}s)")
+    return status
+
+
+# ── Full Sweep ───────────────────────────────────────────────────────────────
+
+def _run_full_sweep(args: argparse.Namespace, config: dict, config_path: Path) -> None:
+    """Run NoReduction + all PCA CEV levels under ONE parent Run_* directory.
+    
+    Each (representation, cev) combination is a child label subdirectory
+    with its own complete, self-contained artifacts snapshot.
+    """
+    cev_thresholds = config.get("pca", {}).get("cev_thresholds", [0.75, 0.80, 0.85, 0.90, 0.95])
+
+    # Build deterministic label sequence
+    sweep_configs: list[tuple[str, float | None]] = [("none", None)]
+    sweep_configs += [("pca", cev) for cev in cev_thresholds]
+    planned_labels = [_label_for(m, c) for m, c in sweep_configs]
+
+    # Create ONE parent directory
+    artifacts_base = PROJECT_ROOT / "artifacts"
+    parent_run_dir = _make_run_dir(artifacts_base)
+
+    _hdr(f"FULL SWEEP: {len(sweep_configs)} representations")
+    print(f"  Parent : {parent_run_dir}")
+    print(f"  Labels : {', '.join(planned_labels)}")
+    print()
+
+    wall_start = time.time()
+    completed_labels: list[str] = []
+    failed_labels: list[str] = []
+
+    for i, (method, cev) in enumerate(sweep_configs, 1):
+        label = _label_for(method, cev)
+        _hdr(f"CHILD {i}/{len(sweep_configs)}: {label}")
+
+        status = _run_child(label, method, cev, parent_run_dir, config, config_path)
+        if status == "OK":
+            completed_labels.append(label)
         else:
-            print(f"\n[PASS] {label} done")
+            failed_labels.append(label)
 
-    return failed
+    wall_elapsed = time.time() - wall_start
+
+    # Write parent sweep_manifest.json
+    sweep_manifest = {
+        "schema_version": 2,
+        "run_id": parent_run_dir.name,
+        "experiment_type": "representation_sweep",
+        "started_at": datetime.now().isoformat(),
+        "completed_at": datetime.now().isoformat(),
+        "wall_seconds": round(wall_elapsed, 1),
+        "planned_labels": planned_labels,
+        "completed_labels": completed_labels,
+        "failed_labels": failed_labels,
+        "common_protocol": {
+            "train_ratio": config.get("preprocess", {}).get("train_ratio"),
+            "val_ratio": config.get("preprocess", {}).get("val_ratio"),
+            "test_ratio": config.get("preprocess", {}).get("test_ratio"),
+            "forecast_horizon": "T+1",
+        },
+        "status": "OK" if not failed_labels else ("PARTIAL" if completed_labels else "FAILED"),
+    }
+    with open(parent_run_dir / "sweep_manifest.json", "w", encoding="utf-8") as f:
+        json.dump(sweep_manifest, f, indent=2, default=str)
+
+    _hdr(f"FULL SWEEP COMPLETE  |  {wall_elapsed/60:.1f} min")
+    print(f"  Parent dir : {parent_run_dir}")
+    print(f"  Completed  : {len(completed_labels)}/{len(planned_labels)}")
+    if failed_labels:
+        print(f"  Failed     : {', '.join(failed_labels)}")
+    print(f"\n  Compare: python -m src.evaluation.compare_representations "
+          f"--run-dir {parent_run_dir}")
 
 
-# ── Multi-CEV flow ────────────────────────────────────────────────────────────
+# ── Single run (produces one child label inside a parent) ────────────────────
 
-def run_multi_cev(args: argparse.Namespace) -> list[str]:
-    """Delegate to src/run_all_multi_cev.py and return failed steps."""
-    _hdr("MULTI-CEV PIPELINE  ->  src/run_all_multi_cev.py")
+def _run_single(args: argparse.Namespace, config: dict, config_path: Path) -> None:
+    """Run a single representation config. Produces one child label inside
+    a fresh parent Run_* directory (same schema as full-sweep)."""
+    method = config.get("reduction", {}).get("method", "pca")
+    cev = config.get("pca", {}).get("explained_variance_threshold") if method == "pca" else None
+    label = _label_for(method, cev)
+
+    artifacts_base = PROJECT_ROOT / "artifacts"
+    parent_run_dir = _make_run_dir(artifacts_base)
+
+    _hdr(f"SINGLE RUN: {label}")
+    print(f"  Parent : {parent_run_dir}")
+    print()
+
+    wall_start = time.time()
+    status = _run_child(label, method, cev, parent_run_dir, config, config_path)
+    wall_elapsed = time.time() - wall_start
+
+    # Write parent sweep_manifest (single-child sweep)
+    sweep_manifest = {
+        "schema_version": 2,
+        "run_id": parent_run_dir.name,
+        "experiment_type": "single_run",
+        "started_at": datetime.now().isoformat(),
+        "completed_at": datetime.now().isoformat(),
+        "wall_seconds": round(wall_elapsed, 1),
+        "planned_labels": [label],
+        "completed_labels": [label] if status == "OK" else [],
+        "failed_labels": [label] if status != "OK" else [],
+        "common_protocol": {
+            "train_ratio": config.get("preprocess", {}).get("train_ratio"),
+            "val_ratio": config.get("preprocess", {}).get("val_ratio"),
+            "test_ratio": config.get("preprocess", {}).get("test_ratio"),
+            "forecast_horizon": "T+1",
+        },
+        "status": status,
+    }
+    with open(parent_run_dir / "sweep_manifest.json", "w", encoding="utf-8") as f:
+        json.dump(sweep_manifest, f, indent=2, default=str)
+
+    _hdr("EXPERIMENT COMPLETE")
+    print(f"  Status  : {status}")
+    print(f"  Elapsed : {wall_elapsed:.0f}s ({wall_elapsed/60:.1f} min)")
+    print(f"  Results : {parent_run_dir / label}")
+    print()
+    if status != "OK":
+        sys.exit(1)
+
+
+# ── Legacy flows (backward compat) ──────────────────────────────────────────
+
+def _run_legacy_multi_cev(args: argparse.Namespace) -> list[str]:
+    """Delegate to src/run_all_multi_cev.py (legacy)."""
+    _hdr("LEGACY MULTI-CEV  ->  src/run_all_multi_cev.py")
     rc = _run(
         [sys.executable, "src/run_all_multi_cev.py", "--config", args.config],
-        cwd=PROJECT_ROOT,
-        label="Multi-CEV orchestrator",
+        cwd=PROJECT_ROOT, label="Multi-CEV orchestrator",
     )
     return [] if rc == 0 else ["Multi-CEV orchestrator"]
 
@@ -257,20 +486,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python experiments/run_experiment.py                        # full single-CEV run (default PCA)
-  python experiments/run_experiment.py --reduction none       # NoReduction baseline
-  python experiments/run_experiment.py --reduction pca --cev 0.85  # PCA at specific CEV
-  python experiments/run_experiment.py --full-sweep           # NoReduction + all CEV levels (separate runs)
-  python experiments/run_experiment.py --multi-cev            # legacy multi-CEV (run_all_multi_cev.py)
-  python experiments/run_experiment.py --skip-preprocess      # re-run models only
+  python experiments/run_experiment.py --reduction pca --cev 0.75   # single PCA run
+  python experiments/run_experiment.py --reduction none             # single NoReduction run
+  python experiments/run_experiment.py --full-sweep                 # no_dr + all CEV (ONE Run_*)
+  python experiments/run_experiment.py --multi-cev                  # legacy multi-CEV
+  python -m src.evaluation.compare_representations --run-dir artifacts/Run_<ts>
         """,
     )
     p.add_argument("--config", default="configs/config.yaml")
-    p.add_argument("--multi-cev", action="store_true",
-                   help="Run multi-CEV sweep (delegates to run_all_multi_cev.py)")
     p.add_argument("--full-sweep", action="store_true",
-                   help="Run NoReduction + all PCA CEV levels as separate sequenced runs "
-                        "(each gets its own artifacts/Run_* snapshot)")
+                   help="Run NoReduction + all PCA CEV levels under ONE parent Run_*")
+    p.add_argument("--multi-cev", action="store_true",
+                   help="Legacy multi-CEV (delegates to run_all_multi_cev.py)")
     p.add_argument("--skip-preprocess", action="store_true")
     p.add_argument("--skip-ardl", action="store_true")
     p.add_argument("--skip-lstm", action="store_true")
@@ -278,7 +505,7 @@ Examples:
     p.add_argument("--continue-on-error", action="store_true",
                    help="Continue to next step even if one fails")
     p.add_argument("--no-collect", action="store_true",
-                   help="Skip copying outputs to artifacts/ (useful for dry runs)")
+                   help="Skip copying outputs to artifacts/ (unused in new schema)")
     p.add_argument("--reduction", type=str, default=None, choices=["pca", "none"],
                    help="Override reduction.method in config (pca or none)")
     p.add_argument("--cev", type=float, default=None,
@@ -295,139 +522,19 @@ def main(argv: list[str] | None = None) -> None:
 
     config = _load_config(config_path)
 
-    # ── Apply CLI overrides to config (write temp file if needed) ──
-    _config_modified = False
+    # Apply CLI overrides
     if args.reduction is not None:
         config.setdefault("reduction", {})["method"] = args.reduction
-        _config_modified = True
     if args.cev is not None:
         config.setdefault("pca", {})["explained_variance_threshold"] = args.cev
-        _config_modified = True
 
-    _temp_config_path = None
-    if _config_modified:
-        import copy
-        _temp_config_path = config_path.parent / f"_temp_run_override_{int(time.time())}.yaml"
-        with open(_temp_config_path, "w", encoding="utf-8") as _tf:
-            yaml.dump(config, _tf, default_flow_style=False, allow_unicode=True)
-        # Point args.config at the temp file so subprocesses read overrides
-        args.config = str(_temp_config_path)
-        print(f"[INFO] CLI overrides applied → temp config: {_temp_config_path.name}")
-
-    # Full sweep mode: run NoReduction + all CEV levels as separate runs
+    # Dispatch
     if args.full_sweep:
         _run_full_sweep(args, config, config_path)
-        return
-
-    try:
-        _main_inner(args, config, config_path)
-    finally:
-        if _temp_config_path is not None and _temp_config_path.exists():
-            _temp_config_path.unlink(missing_ok=True)
-
-
-def _run_full_sweep(args: argparse.Namespace, config: dict, config_path: Path) -> None:
-    """Run NoReduction + all PCA CEV levels as separate sequenced runs.
-    
-    Each (representation, cev) combination produces its own artifacts/Run_*
-    snapshot with a clear manifest, so compare_representations can identify
-    each unambiguously. Preprocessing is shared (run once at the start).
-    """
-    cev_thresholds = config.get("pca", {}).get("cev_thresholds", [0.75, 0.80, 0.85, 0.90, 0.95])
-    
-    # Build the sequence: NoReduction first, then each CEV
-    sweep_configs = [("none", None)] + [("pca", cev) for cev in cev_thresholds]
-    
-    _hdr(f"FULL SWEEP: {len(sweep_configs)} representations")
-    print(f"  Sequence: no_dr, " + ", ".join(f"cev_{c:.2f}" for _, c in sweep_configs[1:]))
-    print(f"  Each produces a separate artifacts/Run_* with manifest identification.")
-    print()
-    
-    wall_start = time.time()
-    results = []
-    
-    for i, (method, cev) in enumerate(sweep_configs, 1):
-        label = "no_dr" if method == "none" else f"cev_{cev:.2f}"
-        _hdr(f"SWEEP {i}/{len(sweep_configs)}: {label}")
-        
-        # Build CLI args for a single run
-        run_args = [sys.executable, "experiments/run_experiment.py",
-                    "--config", str(config_path),
-                    "--reduction", method]
-        if cev is not None:
-            run_args += ["--cev", str(cev)]
-        # Skip preprocess after first run (shared preprocessed data)
-        if i > 1:
-            run_args.append("--skip-preprocess")
-        
-        rc = _run(run_args, cwd=PROJECT_ROOT, label=label)
-        status = "OK" if rc == 0 else "FAILED"
-        results.append((label, status))
-        print(f"\n  [{status}] {label}")
-    
-    elapsed = time.time() - wall_start
-    _hdr(f"FULL SWEEP COMPLETE  |  {elapsed/60:.1f} min")
-    for label, status in results:
-        print(f"  [{status}] {label}")
-    print(f"\n  Compare results: python -m src.evaluation.compare_representations")
-
-
-def _main_inner(args: argparse.Namespace, config: dict, config_path: Path) -> None:
-    """Inner main logic (separated for temp-config cleanup)."""
-    cev_thresholds = config.get("pca", {}).get("cev_thresholds", [0.85, 0.90, 0.95])
-
-    # Auto-detect multi-CEV from config if not set via CLI
-    if not args.multi_cev and config.get("pca", {}).get("use_multi_cev", False):
-        print("[INFO] use_multi_cev=true detected in config -> switching to --multi-cev mode")
-        args.multi_cev = True
-
-    # Create timestamped run directory
-    artifacts_base = PROJECT_ROOT / "artifacts"
-    run_dir = _make_run_dir(artifacts_base)
-
-    _reduction_method = config.get("reduction", {}).get("method", "pca")
-    _hdr(f"VNIndex Experiment  |  {'Multi-CEV' if args.multi_cev else _reduction_method.upper()}")
-    print(f"  Config  : {config_path}")
-    print(f"  Run dir : {run_dir}")
-    print(f"  Representation : {_reduction_method}")
-    if _reduction_method == "pca":
-        print(f"  CEV     : {cev_thresholds if args.multi_cev else config.get('pca', {}).get('explained_variance_threshold')}")
+    elif args.multi_cev:
+        _run_legacy_multi_cev(args)
     else:
-        print(f"  Features: raw scaled (NoReduction, no CEV)")
-
-    wall_start = time.time()
-    timings: dict[str, float] = {}
-    failed: list[str] = []
-
-    # ── Run the pipeline ──────────────────────────────────────────
-    if args.multi_cev:
-        t0 = time.time()
-        failed = run_multi_cev(args)
-        timings["multi_cev_total"] = round(time.time() - t0, 1)
-    else:
-        t0 = time.time()
-        failed = run_single_cev(args, config, run_dir)
-        timings["pipeline_total"] = round(time.time() - t0, 1)
-
-    # ── Collect outputs ───────────────────────────────────────────
-    if not args.no_collect:
-        _hdr("Collecting all outputs into run directory")
-        _collect_outputs(run_dir, args.multi_cev, cev_thresholds)
-
-    # ── Write manifest ────────────────────────────────────────────
-    timings["wall_seconds"] = round(time.time() - wall_start, 1)
-    _write_manifest(run_dir, config, args, timings, failed)
-
-    # ── Final summary ─────────────────────────────────────────────
-    _hdr("EXPERIMENT COMPLETE")
-    status = "[COMP] OK" if not failed else f"[WARN]  FAILED steps: {', '.join(failed)}"
-    print(f"  Status  : {status}")
-    print(f"  Elapsed : {timings['wall_seconds']:.0f}s ({timings['wall_seconds']/60:.1f} min)")
-    print(f"  Results : {run_dir}")
-    print()
-
-    if failed:
-        sys.exit(1)
+        _run_single(args, config, config_path)
 
 
 if __name__ == "__main__":

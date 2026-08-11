@@ -1,13 +1,11 @@
 """
-compare_representations.py – Representation comparison table reader
-====================================================================
-Reads completed run manifests and output artifacts from artifacts/Run_*/
-to produce a summary table comparing NoReduction vs PCA at various CEV
-thresholds. Does NOT run any models — only aggregates existing results.
+compare_representations.py – Representation comparison from a grouped sweep
+============================================================================
+Reads child labels from ONE specific artifacts/Run_* directory and produces
+a comparison table. Does NOT scan all Run_* globally — requires --run-dir.
 
 Usage:
-    python -m src.evaluation.compare_representations
-    python -m src.evaluation.compare_representations --artifacts-dir artifacts/
+    python -m src.evaluation.compare_representations --run-dir artifacts/Run_20260811_120500
 """
 
 from __future__ import annotations
@@ -22,179 +20,119 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _load_manifest(run_dir: Path) -> dict | None:
-    manifest_path = run_dir / "run_manifest.json"
-    if not manifest_path.exists():
+def _load_json(path: Path) -> dict | None:
+    if not path.exists():
         return None
-    with open(manifest_path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-def _load_pca_metrics(run_dir: Path) -> dict:
-    """Load pca_metrics.csv from run artifacts."""
-    pca_metrics_path = run_dir / "data" / "processed" / "pca" / "pca_metrics.csv"
-    if not pca_metrics_path.exists():
-        return {}
-    try:
-        df = pd.read_csv(pca_metrics_path, index_col=0)
-        return df["value"].to_dict()
-    except Exception:
-        return {}
-
-
-def _load_ardl_test_rmse(run_dir: Path) -> dict:
-    """Load ARDL test metrics from sweep/forecast artifacts."""
-    # Try chapter4 forecast file
-    forecast_dir = run_dir / "outputs" / "ardl_vnindex_forecast"
-    if not forecast_dir.exists():
-        return {}
-
-    # Try reading from the forecast CSV to compute metrics
-    for csv_name in ["chapter4_ardl_forecast.csv"]:
-        csv_path = forecast_dir / csv_name
-        if csv_path.exists():
-            try:
-                df = pd.read_csv(csv_path)
-                if "Actual_VNINDEX" in df.columns and "Predicted_VNINDEX" in df.columns:
-                    import numpy as np
-                    from sklearn.metrics import mean_absolute_error, r2_score
-                    actual = df["Actual_VNINDEX"].values
-                    pred = df["Predicted_VNINDEX"].values
-                    residuals = actual - pred
-                    rmse = float(np.sqrt(np.mean(residuals ** 2)))
-                    mae = float(mean_absolute_error(actual, pred))
-                    mape = float(np.mean(np.abs(residuals / (actual + 1e-8))) * 100)
-                    r2 = float(r2_score(actual, pred))
-                    return {"ARDL_RMSE": rmse, "ARDL_MAE": mae, "ARDL_MAPE": mape, "ARDL_R2": r2,
-                            "ARDL_N": len(df)}
-            except Exception:
-                pass
-
-    # Try sweep results for selected pair info
-    sweep_path = run_dir / "outputs" / "ardl_vnindex_pca_sweep" / "sweep_results.csv"
-    info = {}
-    if sweep_path.exists():
-        try:
-            sweep = pd.read_csv(sweep_path)
-            ok = sweep[sweep["Status"] == "OK"]
-            if not ok.empty:
-                best = ok.loc[ok["BIC"].idxmin()]
-                info["ARDL_P"] = int(best["P"])
-                info["ARDL_Q"] = int(best["Q"])
-        except Exception:
-            pass
-    return info
-
-
-def _load_lstm_test_rmse(run_dir: Path) -> dict:
-    """Load LSTM test metrics from sweep artifacts."""
-    lstm_dir = run_dir / "outputs" / "lstm_vnindex_sweep"
-    if not lstm_dir.exists():
-        return {}
-
-    # Find best model from sweep_summary
-    summary_path = lstm_dir / "sweep_summary.csv"
-    info = {}
-    if summary_path.exists():
-        try:
-            summary = pd.read_csv(summary_path)
-            best_row = summary.loc[summary["Val_RMSE"].idxmin()]
-            info["LSTM_LB"] = int(best_row["Lookback"])
-            info["LSTM_BS"] = int(best_row["Batch_size"])
-            info["LSTM_best_epoch"] = int(best_row["Best_Epoch"])
-        except Exception:
-            pass
-
-    # Find predictions file for test metrics
-    for pred_file in sorted(lstm_dir.glob("predictions_lookback_*.csv")):
-        try:
-            df = pd.read_csv(pred_file)
-            if "Actual_VNINDEX" in df.columns and "Predicted_VNINDEX" in df.columns:
-                import numpy as np
-                from sklearn.metrics import mean_absolute_error, r2_score
-                actual = df["Actual_VNINDEX"].values
-                pred = df["Predicted_VNINDEX"].values
-                residuals = actual - pred
-                rmse = float(np.sqrt(np.mean(residuals ** 2)))
-                mae = float(mean_absolute_error(actual, pred))
-                mape = float(np.mean(np.abs(residuals / (actual + 1e-8))) * 100)
-                r2 = float(r2_score(actual, pred))
-                info.update({"LSTM_RMSE": rmse, "LSTM_MAE": mae, "LSTM_MAPE": mape,
-                             "LSTM_R2": r2, "LSTM_N": len(df)})
-                break
-        except Exception:
-            continue
-
-    return info
-
-
-def _load_dm_results(run_dir: Path) -> dict:
-    """Load DM test p-values."""
-    dm_path = run_dir / "outputs" / "model_comparison" / "dm_test_results.csv"
-    if not dm_path.exists():
-        return {}
-    try:
-        dm = pd.read_csv(dm_path)
-        info = {}
-        for _, row in dm.iterrows():
-            loss = row.get("Loss_Type", "")
-            if loss == "MSE":
-                info["DM_MSE_p"] = row.get("p_value")
-            elif loss == "MAE":
-                info["DM_MAE_p"] = row.get("p_value")
-        return info
-    except Exception:
-        return {}
-
-
-def collect_run_results(artifacts_dir: Path) -> pd.DataFrame:
-    """Scan all Run_* directories and aggregate results into a table.
+def collect_from_run_dir(run_dir: Path) -> pd.DataFrame:
+    """Read child label results from a single parent Run_* directory.
     
-    Only includes runs with status=OK. When multiple runs exist for the
-    same (representation, cev_requested) combination, keeps only the
-    LATEST one (by directory name timestamp).
+    Only inspects direct child directories that contain run_manifest.json.
+    Does NOT scan other Run_* dirs. Requires each child to have
+    results/run_summary.json for metrics.
     """
-    rows = []
-
-    run_dirs = sorted(artifacts_dir.glob("Run_*"))
-    if not run_dirs:
-        print(f"[WARN] No Run_* directories found in {artifacts_dir}")
+    sweep_manifest = _load_json(run_dir / "sweep_manifest.json")
+    if sweep_manifest is None:
+        print(f"[WARN] No sweep_manifest.json in {run_dir}")
         return pd.DataFrame()
 
-    for run_dir in run_dirs:
-        manifest = _load_manifest(run_dir)
-        if manifest is None:
+    parent_run_id = sweep_manifest.get("run_id", run_dir.name)
+    planned = sweep_manifest.get("planned_labels", [])
+
+    rows = []
+    found_labels = set()
+
+    for child_dir in sorted(run_dir.iterdir()):
+        if not child_dir.is_dir():
             continue
-        if manifest.get("status") != "OK":
+        child_manifest = _load_json(child_dir / "run_manifest.json")
+        if child_manifest is None:
             continue
 
-        # Determine representation
-        repr_info = manifest.get("representation", {})
-        method = repr_info.get("method")
-        # Fallback for old manifests without representation field
-        if method is None:
-            method = "pca"
+        label = child_manifest.get("label", child_dir.name)
 
-        cev_requested = repr_info.get("cev_requested")
-        # Fallback for old manifests
-        if cev_requested is None and method == "pca":
-            cev_requested = manifest.get("pca", {}).get("threshold")
+        # Duplicate label check
+        if label in found_labels:
+            print(f"[FAIL] Duplicate label '{label}' in {run_dir} — refusing to aggregate")
+            sys.exit(1)
+        found_labels.add(label)
 
-        pca_metrics = _load_pca_metrics(run_dir)
-        ardl_info = _load_ardl_test_rmse(run_dir)
-        lstm_info = _load_lstm_test_rmse(run_dir)
-        dm_info = _load_dm_results(run_dir)
+        # Only include completed children
+        if child_manifest.get("status") != "OK":
+            print(f"  [SKIP] {label}: status={child_manifest.get('status')}")
+            continue
+
+        # Validate parent_run_id matches
+        if child_manifest.get("parent_run_id") != parent_run_id:
+            print(f"  [SKIP] {label}: parent_run_id mismatch "
+                  f"(expected {parent_run_id}, got {child_manifest.get('parent_run_id')})")
+            continue
+
+        # Read run_summary
+        summary = _load_json(child_dir / "results" / "run_summary.json")
+        if summary is None:
+            print(f"  [SKIP] {label}: missing results/run_summary.json")
+            continue
+
+        repr_info = summary.get("representation", {})
+        ardl_info = summary.get("ardl", {})
+        lstm_info = summary.get("lstm", {})
+        dm_info = summary.get("dm", {})
+
+        # PCA consistency check: label/manifest/summary CEV must agree
+        manifest_cev = child_manifest.get("representation", {}).get("cev_requested")
+        summary_cev = repr_info.get("cev_requested")
+        if repr_info.get("method") == "pca":
+            expected_label = f"pca_cev_{manifest_cev:.2f}" if manifest_cev is not None else None
+            if expected_label and expected_label != label:
+                print(f"  [INVALID] {label}: label/manifest CEV mismatch (expected {expected_label})")
+                continue
+            if manifest_cev is not None and summary_cev is not None:
+                if abs(float(manifest_cev) - float(summary_cev)) > 0.001:
+                    print(f"  [INVALID] {label}: manifest/summary CEV mismatch "
+                          f"({manifest_cev} vs {summary_cev})")
+                    continue
+
+        # NoReduction cannot contain PCA k semantics
+        if repr_info.get("method") == "none":
+            k = repr_info.get("k_actual")
+            p = repr_info.get("p_original")
+            if k is not None and p is not None and k != p:
+                print(f"  [INVALID] {label}: NoReduction but k_actual ({k}) != p_original ({p})")
+                continue
 
         row = {
-            "run": run_dir.name,
-            "representation": method,
-            "cev_requested": cev_requested,
-            "k": pca_metrics.get("k_optimal"),
-            "dim_reduction_pct": pca_metrics.get("dim_reduction_pct"),
+            "parent_run_id": parent_run_id,
+            "label": label,
+            "representation": repr_info.get("method"),
+            "cev_requested": repr_info.get("cev_requested"),
+            "cev_achieved": repr_info.get("cev_achieved"),
+            "p_original": repr_info.get("p_original"),
+            "k": repr_info.get("k_actual"),
+            "dim_reduction_pct": repr_info.get("dim_reduction_pct"),
         }
-        row.update(ardl_info)
-        row.update(lstm_info)
-        row.update(dm_info)
+        # ARDL
+        row["ARDL_P"] = ardl_info.get("ARDL_P")
+        row["ARDL_Q"] = ardl_info.get("ARDL_Q")
+        row["ARDL_RMSE"] = ardl_info.get("ARDL_RMSE")
+        row["ARDL_MAE"] = ardl_info.get("ARDL_MAE")
+        row["ARDL_R2"] = ardl_info.get("ARDL_R2")
+        row["ARDL_N"] = ardl_info.get("ARDL_N")
+        # LSTM
+        row["LSTM_LB"] = lstm_info.get("LSTM_LB")
+        row["LSTM_BS"] = lstm_info.get("LSTM_BS")
+        row["LSTM_best_epoch"] = lstm_info.get("LSTM_best_epoch")
+        row["LSTM_RMSE"] = lstm_info.get("LSTM_RMSE")
+        row["LSTM_MAE"] = lstm_info.get("LSTM_MAE")
+        row["LSTM_R2"] = lstm_info.get("LSTM_R2")
+        row["LSTM_N"] = lstm_info.get("LSTM_N")
+        # DM
+        row["DM_MSE_p"] = dm_info.get("DM_MSE_p")
+        row["DM_MAE_p"] = dm_info.get("DM_MAE_p")
+
         rows.append(row)
 
     if not rows:
@@ -202,80 +140,85 @@ def collect_run_results(artifacts_dir: Path) -> pd.DataFrame:
 
     df = pd.DataFrame(rows)
 
-    # Deduplicate: keep only latest run per (representation, cev_requested)
-    # Since run dirs are sorted by timestamp, last one wins.
-    df["_key"] = df["representation"].astype(str) + "_" + df["cev_requested"].astype(str)
-    df = df.drop_duplicates(subset=["_key"], keep="last").drop(columns=["_key"])
-
-    # Sort: none first, then by cev_requested ascending
+    # Sort: no_dr first, then by cev_requested ascending
     df["_sort_method"] = df["representation"].map({"none": 0, "pca": 1}).fillna(2)
-    df["_sort_cev"] = df["cev_requested"].fillna(-1).astype(float)
+    df["_sort_cev"] = pd.to_numeric(df["cev_requested"], errors="coerce").fillna(-1)
     df = df.sort_values(["_sort_method", "_sort_cev"]).drop(columns=["_sort_method", "_sort_cev"])
+    df = df.reset_index(drop=True)
 
     return df
 
 
-def print_comparison_table(df: pd.DataFrame) -> None:
+def print_comparison_table(df: pd.DataFrame, run_dir: Path) -> None:
     """Print a formatted comparison table."""
     if df.empty:
-        print("[INFO] No completed runs found to compare.")
+        print("[INFO] No valid completed children found to compare.")
         return
 
-    # Map representation to readable labels
-    df = df.copy()
-    df["label"] = df.apply(
-        lambda r: "no_dr" if r["representation"] == "none"
-        else f"cev_{r['cev_requested']:.2f}" if pd.notna(r["cev_requested"])
-        else "pca_unknown",
-        axis=1,
-    )
+    print("\n" + "=" * 120)
+    print(f"  REPRESENTATION COMPARISON TABLE  |  {run_dir.name}")
+    print("=" * 120)
 
-    # Select display columns
-    display_cols = [
+    # Primary metrics
+    primary_cols = [
         "label", "representation", "cev_requested", "k", "dim_reduction_pct",
         "ARDL_RMSE", "LSTM_RMSE", "ARDL_MAE", "LSTM_MAE",
         "ARDL_R2", "LSTM_R2", "DM_MSE_p", "DM_MAE_p",
     ]
-    display_cols = [c for c in display_cols if c in df.columns]
+    primary_cols = [c for c in primary_cols if c in df.columns]
+    print(df[primary_cols].to_string(index=False))
+    print()
 
-    print("\n" + "=" * 110)
-    print("  REPRESENTATION COMPARISON TABLE")
-    print("  (Each row = latest successful run per representation/CEV combination)")
-    print("=" * 110)
-    print(df[display_cols].to_string(index=False))
-    print("=" * 110)
-
-    # Additional detail columns if available
-    detail_cols = ["ARDL_P", "ARDL_Q", "LSTM_LB", "LSTM_BS", "LSTM_best_epoch", "ARDL_N", "LSTM_N"]
+    # Model selection detail
+    detail_cols = ["label", "ARDL_P", "ARDL_Q", "LSTM_LB", "LSTM_BS",
+                   "LSTM_best_epoch", "ARDL_N", "LSTM_N"]
     detail_cols = [c for c in detail_cols if c in df.columns]
-    if detail_cols:
-        print("\n  MODEL SELECTION DETAIL:")
-        print(df[["label"] + detail_cols].to_string(index=False))
+    if len(detail_cols) > 1:
+        print("  MODEL SELECTION DETAIL:")
+        print(df[detail_cols].to_string(index=False))
 
-    print(f"\n  Source: {len(df)} unique (representation, cev) combinations from artifacts/Run_*/")
+    print("=" * 120)
+    print(f"  Source: {run_dir}")
+    print(f"  Children: {len(df)} valid / {len(list(run_dir.iterdir()))} total subdirs")
     print()
 
 
+def save_comparison(df: pd.DataFrame, run_dir: Path) -> None:
+    """Save comparison results under <run_dir>/comparison/."""
+    comp_dir = run_dir / "comparison"
+    comp_dir.mkdir(parents=True, exist_ok=True)
+
+    csv_path = comp_dir / "representation_comparison.csv"
+    df.to_csv(csv_path, index=False)
+    print(f"[SAVED] {csv_path}")
+
+    json_path = comp_dir / "representation_comparison.json"
+    df.to_json(json_path, orient="records", indent=2)
+    print(f"[SAVED] {json_path}")
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Compare representation results across runs")
-    parser.add_argument("--artifacts-dir", type=str, default="artifacts",
-                        help="Path to artifacts directory containing Run_* subdirs")
-    parser.add_argument("--output-csv", type=str, default=None,
-                        help="Optional: save table to CSV")
+    parser = argparse.ArgumentParser(
+        description="Compare representation results from a grouped sweep run"
+    )
+    parser.add_argument("--run-dir", type=str, required=True,
+                        help="Path to a specific artifacts/Run_* directory (REQUIRED)")
+    parser.add_argument("--no-save", action="store_true",
+                        help="Don't save comparison CSV/JSON (print only)")
     args = parser.parse_args()
 
-    artifacts_dir = PROJECT_ROOT / args.artifacts_dir
-    if not artifacts_dir.exists():
-        print(f"[FAIL] Artifacts directory not found: {artifacts_dir}")
+    run_dir = Path(args.run_dir)
+    if not run_dir.is_absolute():
+        run_dir = PROJECT_ROOT / run_dir
+    if not run_dir.exists():
+        print(f"[FAIL] Run directory not found: {run_dir}")
         sys.exit(1)
 
-    df = collect_run_results(artifacts_dir)
-    print_comparison_table(df)
+    df = collect_from_run_dir(run_dir)
+    print_comparison_table(df, run_dir)
 
-    if args.output_csv:
-        out_path = PROJECT_ROOT / args.output_csv
-        df.to_csv(out_path, index=False)
-        print(f"[SAVED] {out_path}")
+    if not args.no_save and not df.empty:
+        save_comparison(df, run_dir)
 
 
 if __name__ == "__main__":

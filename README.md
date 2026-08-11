@@ -199,6 +199,39 @@ python experiments/run_experiment.py --continue-on-error # Không dừng nếu 1
 python experiments/run_experiment.py --no-collect        # Không copy vào artifacts/
 ```
 
+**Mmulti-seed LSTM stability:**
+
+
+```bash
+python experiments/run_lstm_multiseed_stability.py
+```
+
+**Yêu cầu trước khi chạy:**
+- Pipeline preprocess + PCA (hoặc NoReduction) + LSTM tuning sweep phải đã hoàn thành trước (ít nhất `data/processed/pca/` và `outputs/lstm_vnindex_sweep/` phải tồn tại)
+
+**Cách hoạt động:**
+1. Chạy LSTM tuning sweep với seed=42 (reference run) — freeze (lookback, batch_size, best_epoch) được chọn
+2. Với mỗi seed trong [42, 52, 62, 72, 82]: tạo NEW model instance, refit trên Train+Val với cùng (lookback, batch_size, best_epoch), forecast Test
+3. Report: mean ± std cho Test RMSE/MAE/MAPE across 5 seeds
+
+**Options:**
+```bash
+# Skip DM comparison per seed (chỉ report LSTM stability):
+python experiments/run_lstm_multiseed_stability.py --skip-dm
+```
+
+**Thứ tự chạy đầy đủ cho một representation:**
+```bash
+# 1. Single run (tuning + final refit, seed=42):
+python experiments/run_experiment.py --reduction pca --cev 0.75
+
+# 2. Multi-seed stability (reuses frozen selection from step 1):
+python experiments/run_lstm_multiseed_stability.py
+```
+
+Output sẽ lưu vào `outputs/lstm_vnindex_multiseed/` với per-seed predictions và summary statistics.
+
+
 | Lệnh | Thực hiện | Thời gian |
 |---|---|---|
 | `python experiments/run_experiment.py` | Full single-CEV (preprocess+PCA+ARDL+LSTM+DM) | ~5-10 phút |
