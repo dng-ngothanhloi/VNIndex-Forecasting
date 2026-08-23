@@ -60,33 +60,57 @@ def _load_split_dates(run_dir: Path) -> dict:
     raise FileNotFoundError(f"No split_summary.csv found in any child of {run_dir}")
 
 
-def _load_ardl_forecasts(run_dir: Path) -> dict[str, pd.DataFrame]:
-    """Load existing ARDL forecasts from each pca_cev_* child."""
-    results = {}
+def _load_ardl_forecasts(run_dir: Path) -> tuple[dict, dict]:
+    """Load existing ARDL forecasts from each pca_cev_* child.
+
+    Returns (results, skipped) where `skipped` maps child name -> reason.
+    Reporting the skip reason is required: an empty `results` can mean a
+    legitimate no_dr-only run OR a completely broken sweep, and those two
+    situations must never look identical to the caller.
+    """
+    results: dict = {}
+    skipped: dict = {}
+
     for child in sorted(run_dir.iterdir()):
         if not child.is_dir():
             continue
+        # Non-child directories produced by this tool / the sweep itself.
+        if child.name in ("baselines", "comparison", "shared", "diagnostics"):
+            continue
+
         manifest_path = child / "run_manifest.json"
         if not manifest_path.exists():
+            skipped[child.name] = "no run_manifest.json"
             continue
+
         manifest = json.loads(manifest_path.read_text())
-        if manifest.get("status") != "OK":
+        status = manifest.get("status")
+        if status != "OK":
+            failed = manifest.get("failed_steps") or []
+            skipped[child.name] = (f"status={status}"
+                                   + (f" failed_steps={failed}" if failed else ""))
             continue
+
         repr_info = manifest.get("representation", {})
-        if repr_info.get("method") != "pca":
+        method = repr_info.get("method")
+        if method != "pca":
+            skipped[child.name] = f"representation.method={method!r} (not pca)"
             continue
 
         forecast_path = child / "outputs" / "ardl_vnindex_forecast" / "chapter4_ardl_forecast.csv"
-        if forecast_path.exists():
-            df = pd.read_csv(forecast_path, parse_dates=["Date"])
-            label = child.name
-            results[label] = {
-                "df": df,
-                "cev": repr_info.get("cev_requested"),
-                "k": repr_info.get("k_actual"),
-                "manifest": manifest,
-            }
-    return results
+        if not forecast_path.exists():
+            skipped[child.name] = "missing outputs/ardl_vnindex_forecast/chapter4_ardl_forecast.csv"
+            continue
+
+        df = pd.read_csv(forecast_path, parse_dates=["Date"])
+        results[child.name] = {
+            "df": df,
+            "cev": repr_info.get("cev_requested"),
+            "k": repr_info.get("k_actual"),
+            "manifest": manifest,
+        }
+
+    return results, skipped
 
 
 def main():
@@ -214,8 +238,32 @@ def main():
 
     # ── Load existing ARDL forecasts ──────────────────────────────
     _hdr("LOADING EXISTING PCA-ARDL FORECASTS")
-    ardl_results = _load_ardl_forecasts(run_dir)
-    print(f"  Found {len(ardl_results)} PCA-ARDL children")
+    ardl_results, ardl_skipped = _load_ardl_forecasts(run_dir)
+    print(f"  Found {len(ardl_results)} usable PCA-ARDL children")
+    for name, reason in sorted(ardl_skipped.items()):
+        print(f"  [SKIP] {name}: {reason}")
+
+    if not ardl_results:
+        # Distinguish a BROKEN sweep from a legitimate no-PCA run. Silently
+        # exiting 0 in the broken case would hide a failed experiment.
+        broken = {n: r for n, r in ardl_skipped.items() if r.startswith("status=")}
+        print()
+        print("  [FAIL] No usable PCA-ARDL child found in this run.")
+        print("         Baseline metrics (Persistence / AR(1)) were still computed and saved,")
+        print("         but no PCA-ARDL comparison / incremental-value / DM table can be produced.")
+        if broken:
+            print()
+            print("  This run contains PCA-ARDL children that FAILED — the sweep is broken,")
+            print("  not merely missing PCA. Fix the upstream failure and re-run the sweep:")
+            for n, r in sorted(broken.items()):
+                print(f"    - {n}: {r}")
+            print()
+            print("    python experiments/run_experiment.py --full-sweep --include-multiseed")
+            sys.exit(1)
+        print()
+        print("  No PCA-ARDL children were planned in this run (e.g. a no_dr-only run).")
+        print("  This is a valid run; there is simply nothing to compare against.")
+        sys.exit(0)
 
     # Verify same population
     for label, info in ardl_results.items():
@@ -277,90 +325,96 @@ def main():
             "MAE_gain_pct_vs_AR1": (ar1_test_metrics["MAE"] - ardl_m["MAE"]) / ar1_test_metrics["MAE"] * 100,
         })
     incr_df = pd.DataFrame(incr_rows)
-    print(incr_df[["CEV", "k", "PCA_ARDL_RMSE", "RMSE_gain_vs_persistence",
-                   "RMSE_gain_pct_vs_persistence", "RMSE_gain_vs_AR1",
-                   "RMSE_gain_pct_vs_AR1"]].to_string(index=False))
+    if not incr_df.empty:
+        print(incr_df[["CEV", "k", "PCA_ARDL_RMSE", "RMSE_gain_vs_persistence",
+                       "RMSE_gain_pct_vs_persistence", "RMSE_gain_vs_AR1",
+                       "RMSE_gain_pct_vs_AR1"]].to_string(index=False))
+    else:
+        print("  (No PCA-ARDL children found — incremental value table empty)")
     incr_df.to_csv(comp_dir / "pca_ardl_incremental_value.csv", index=False)
 
     # ── DM tests ──────────────────────────────────────────────────
     _hdr("DM TESTS: BASELINES vs PCA-ARDL")
-    # Sign convention: forecast1=baseline, forecast2=PCA-ARDL
-    # negative mean_diff → PCA-ARDL has HIGHER loss (baseline better)
-    # positive mean_diff → PCA-ARDL has LOWER loss (PCA-ARDL better)
-    # Wait — check actual convention from dm_test.py:
-    # d = e1^2 - e2^2; d_bar < 0 → forecast1 better
-    # So: forecast1=PCA-ARDL, forecast2=baseline
-    # Then: negative d_bar → PCA-ARDL better (lower loss)
-    dm_rows = []
-    actual = y_test.values
+    if not ardl_results:
+        print("  (No PCA-ARDL children found — skipping DM baseline comparison)")
+        dm_df = pd.DataFrame()
+    else:
+        # Sign convention: forecast1=PCA-ARDL, forecast2=baseline
+        # negative dm_stat → PCA-ARDL has lower loss (better)
+        dm_rows = []
+        actual = y_test.values
 
-    for label, info in sorted(ardl_results.items()):
-        ardl_pred = info["df"]["Predicted_VNINDEX"].values
+        for label, info in sorted(ardl_results.items()):
+            ardl_pred = info["df"]["Predicted_VNINDEX"].values
 
-        for baseline_name, baseline_pred in [("Persistence", persist_test.values),
-                                              ("AR(1)", ar1_test_pred.values)]:
-            for loss in ("mse", "mae"):
-                # forecast1=PCA-ARDL, forecast2=baseline
-                # negative dm_stat → PCA-ARDL has lower loss
-                dm = diebold_mariano_test(actual, ardl_pred, baseline_pred,
-                                          loss_type=loss, alternative="two-sided")
-                dm_rows.append({
-                    "cev": info["cev"], "k": info["k"],
-                    "comparison": f"PCA-ARDL vs {baseline_name}",
-                    "loss_type": loss.upper(),
-                    "mean_loss_diff": dm["mean_diff"],
-                    "dm_stat": dm["dm_stat"],
-                    "p_value": dm["p_value"],
-                    "significant_5pct": dm["p_value"] < 0.05,
-                    "n": dm["sample_size"],
-                    "direction": "PCA-ARDL lower loss" if dm["mean_diff"] < 0 else "Baseline lower loss",
-                })
+            for baseline_name, baseline_pred in [("Persistence", persist_test.values),
+                                                  ("AR(1)", ar1_test_pred.values)]:
+                for loss in ("mse", "mae"):
+                    dm = diebold_mariano_test(actual, ardl_pred, baseline_pred,
+                                              loss_type=loss, alternative="two-sided")
+                    dm_rows.append({
+                        "cev": info["cev"], "k": info["k"],
+                        "comparison": f"PCA-ARDL vs {baseline_name}",
+                        "loss_type": loss.upper(),
+                        "mean_loss_diff": dm["mean_diff"],
+                        "dm_stat": dm["dm_stat"],
+                        "p_value": dm["p_value"],
+                        "significant_5pct": dm["p_value"] < 0.05,
+                        "n": dm["sample_size"],
+                        "direction": "PCA-ARDL lower loss" if dm["mean_diff"] < 0 else "Baseline lower loss",
+                    })
 
-    dm_df = pd.DataFrame(dm_rows)
-    print(dm_df[["cev", "comparison", "loss_type", "dm_stat", "p_value",
-                 "significant_5pct", "direction"]].to_string(index=False))
-    dm_df.to_csv(comp_dir / "baseline_dm_comparison.csv", index=False)
+        dm_df = pd.DataFrame(dm_rows)
+        print(dm_df[["cev", "comparison", "loss_type", "dm_stat", "p_value",
+                     "significant_5pct", "direction"]].to_string(index=False))
+    if not dm_df.empty:
+        dm_df.to_csv(comp_dir / "baseline_dm_comparison.csv", index=False)
 
     # ── Interpretation ────────────────────────────────────────────
     _hdr("INTERPRETATION")
     interpretations = []
-    for label, info in sorted(ardl_results.items()):
-        cev = info["cev"]
-        ardl_pred = info["df"]["Predicted_VNINDEX"].values
-        ardl_m = regression_metrics(actual, ardl_pred)
+    if not ardl_results:
+        print("  (No PCA-ARDL children found — skipping interpretation)")
+    else:
+        actual = y_test.values
+        for label, info in sorted(ardl_results.items()):
+            cev = info["cev"]
+            ardl_pred = info["df"]["Predicted_VNINDEX"].values
+            ardl_m = regression_metrics(actual, ardl_pred)
 
-        for baseline_name, baseline_metrics in [("Persistence", persist_test_metrics),
-                                                 ("AR(1)", ar1_test_metrics)]:
-            rmse_gain = baseline_metrics["RMSE"] - ardl_m["RMSE"]
-            rmse_gain_pct = rmse_gain / baseline_metrics["RMSE"] * 100
-            # Find DM result
-            dm_row = dm_df[(dm_df["cev"] == cev) &
-                           (dm_df["comparison"] == f"PCA-ARDL vs {baseline_name}") &
-                           (dm_df["loss_type"] == "MSE")]
-            sig = bool(dm_row["significant_5pct"].iloc[0]) if not dm_row.empty else False
-            pca_lower = bool(dm_row["mean_loss_diff"].iloc[0] < 0) if not dm_row.empty else False
+            for baseline_name, baseline_metrics in [("Persistence", persist_test_metrics),
+                                                     ("AR(1)", ar1_test_metrics)]:
+                rmse_gain = baseline_metrics["RMSE"] - ardl_m["RMSE"]
+                rmse_gain_pct = rmse_gain / baseline_metrics["RMSE"] * 100
+                # Find DM result
+                dm_row = dm_df[(dm_df["cev"] == cev) &
+                               (dm_df["comparison"] == f"PCA-ARDL vs {baseline_name}") &
+                               (dm_df["loss_type"] == "MSE")]
+                sig = bool(dm_row["significant_5pct"].iloc[0]) if not dm_row.empty else False
+                pca_lower = bool(dm_row["mean_loss_diff"].iloc[0] < 0) if not dm_row.empty else False
 
-            if pca_lower and sig and rmse_gain_pct > 10:
-                verdict = "material_and_significant"
-            elif pca_lower and sig:
-                verdict = "small_but_significant"
-            elif pca_lower and not sig:
-                verdict = "small_not_significant"
-            elif not pca_lower and not sig:
-                verdict = "no_improvement"
-            else:
-                verdict = "worse"
+                if pca_lower and sig and rmse_gain_pct > 10:
+                    verdict = "material_and_significant"
+                elif pca_lower and sig:
+                    verdict = "small_but_significant"
+                elif pca_lower and not sig:
+                    verdict = "small_not_significant"
+                elif not pca_lower and not sig:
+                    verdict = "no_improvement"
+                else:
+                    verdict = "worse"
 
-            interpretations.append({
-                "cev": cev, "vs_baseline": baseline_name,
-                "rmse_gain": rmse_gain, "rmse_gain_pct": rmse_gain_pct,
-                "dm_significant": sig, "pca_ardl_lower_loss": pca_lower,
-                "verdict": verdict,
-            })
+                interpretations.append({
+                    "cev": cev, "vs_baseline": baseline_name,
+                    "rmse_gain": rmse_gain, "rmse_gain_pct": rmse_gain_pct,
+                    "dm_significant": sig, "pca_ardl_lower_loss": pca_lower,
+                    "verdict": verdict,
+                })
 
-    interp_df = pd.DataFrame(interpretations)
-    print(interp_df[["cev", "vs_baseline", "rmse_gain", "rmse_gain_pct",
-                     "dm_significant", "verdict"]].to_string(index=False))
+    if interpretations:
+        interp_df = pd.DataFrame(interpretations)
+        print(interp_df[["cev", "vs_baseline", "rmse_gain", "rmse_gain_pct",
+                         "dm_significant", "verdict"]].to_string(index=False))
 
     with open(comp_dir / "baseline_interpretation.json", "w") as f:
         json.dump(interpretations, f, indent=2, default=str)
@@ -372,7 +426,7 @@ def main():
     print(f"  Persistence Test RMSE: {persist_test_metrics['RMSE']:.4f}")
     print(f"  AR(1) Test RMSE:       {ar1_test_metrics['RMSE']:.4f}")
     for label, info in sorted(ardl_results.items()):
-        ardl_m = regression_metrics(actual, info["df"]["Predicted_VNINDEX"].values)
+        ardl_m = regression_metrics(y_test.values, info["df"]["Predicted_VNINDEX"].values)
         print(f"  PCA-ARDL CEV={info['cev']}: RMSE={ardl_m['RMSE']:.4f}")
 
 

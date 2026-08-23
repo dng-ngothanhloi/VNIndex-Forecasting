@@ -1,2 +1,0 @@
-# VNIndex-Forcasting
-##Collect data

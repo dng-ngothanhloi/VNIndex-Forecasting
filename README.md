@@ -12,6 +12,8 @@ Dự án áp dụng **PCA** (Principal Component Analysis), **ARDL** (Autoregres
 | macOS (Apple Silicon) | Sequoia 15+ / macOS 26+ |
 | RAM tối thiểu | 8 GB |
 
+> **Lưu ý TensorFlow trên Apple Silicon:** `tensorflow==2.21` kết hợp `tensorflow-metal==1.2` có lỗi `dlopen libmetal_plugin.dylib` trên macOS 26.x do RPATH không resolve đúng `_pywrap_tensorflow_internal.so` trong môi trường venv. Script setup tự động dùng `tensorflow-macos==2.16.2` thay thế (CPU-safe, ổn định).
+
 ---
 
 ## Cấu trúc dự án
@@ -31,7 +33,8 @@ VNIndex-Forecasting/
 │       ├── stationarity/            # ADF/KPSS test results
 │       └── pca/                     # train/val/test_pca.csv, loadings, metrics
 ├── experiments/                     # Canonical experiment entry points
-│   ├── run_experiment.py            # Unified orchestrator (preprocess+PCA → ARDL → LSTM → DM)
+│   ├── run_experiment.py            # Unified orchestrator (--full-sweep, --include-multiseed)
+│   ├── run_baselines.py             # Persistence + AR(1) baselines (--run-dir)
 │   ├── run_ardl_experiment.py       # ARDL standalone experiment
 │   ├── run_lstm_experiment.py       # LSTM standalone experiment
 │   └── run_lstm_multiseed_stability.py  # Multi-seed stability (seeds 42/52/62/72/82)
@@ -43,12 +46,14 @@ VNIndex-Forecasting/
 │   ├── utils.py                     # split_by_time, helpers
 │   ├── preprocess_steps/            # Step-by-step preprocessing modules
 │   ├── preprocessing/               # Preprocessing abstractions
-│   ├── reduction/                   # BaseReducer, PCAReducer
+│   ├── reduction/                   # BaseReducer, PCAReducer, NoReduction
 │   │   ├── base.py                  # BaseReducer ABC, NotFittedError
-│   │   └── pca.py                   # PCAReducer (wraps sklearn PCA)
+│   │   ├── pca.py                   # PCAReducer (wraps sklearn PCA)
+│   │   └── noreduction.py           # NoReduction (identity transform baseline)
 │   ├── forecasting/                 # Forecasting models
 │   │   ├── base.py                  # BaseForecaster ABC
 │   │   ├── prediction_result.py     # PredictionResult dataclass
+│   │   ├── ar.py                    # Persistence + AR(1) baselines
 │   │   ├── ardl_forecaster.py       # ARDLForecaster (BaseForecaster adapter)
 │   │   ├── lstm_forecaster.py       # LSTMForecaster (BaseForecaster adapter)
 │   │   ├── ardl/                    # ARDL pipeline modules
@@ -70,7 +75,8 @@ VNIndex-Forecasting/
 │       ├── dm_test.py               # Diebold-Mariano test (HAC-corrected)
 │       ├── run_dm_test.py           # DM test runner (ARDL vs LSTM)
 │       ├── metrics.py               # Shared regression metrics
-│       └── compare_cev_levels.py    # Cross-CEV comparison
+│       ├── compare_representations.py  # Representation comparison (--run-dir)
+│       └── compare_cev_levels.py    # (deprecated) legacy cross-CEV comparison
 ├── tests/                           # pytest test suite
 │   ├── conftest.py                  # Path setup
 │   ├── forecasting/                 # Forecasting tests
@@ -89,7 +95,8 @@ VNIndex-Forecasting/
 │   ├── lstm_vnindex_sweep/          # LSTM sweep_summary.csv + predictions + pkl
 │   ├── model_comparison/            # DM test report + results
 │   └── cev_comparison/              # Multi-CEV comparison (when enabled)
-├── artifacts/                       # Timestamped run snapshots (Run_YYYYMMDD_HHMMSS/)
+├── artifacts/                       # Immutable run snapshots (Run_YYYYMMDD_HHMMSS/)
+│                                    #   → xem "Artifact structure" bên dưới
 ├── docs/                            # Additional documentation
 ├── requirements.txt
 └── local_setup_env.sh               # Script setup môi trường (uv-based)
@@ -148,47 +155,134 @@ pip install tensorflow-macos==2.16.2
 
 > Đảm bảo đã `source .venv/bin/activate` và đang ở thư mục gốc của project.
 
-### Cách 1 – Unified Pipeline (khuyến nghị)
+Mỗi lần chạy đều tạo một `artifacts/Run_<YYYYMMDD_HHMMSS>/` bất biến chứa
+snapshot đầy đủ (data, models, outputs, logs, manifests). Thư mục `outputs/` ở
+gốc project là **mutable working dir** — bị ghi đè giữa các lần chạy, không dùng
+để so sánh kết quả.
 
-Chạy toàn bộ pipeline bằng 1 lệnh duy nhất:
+Một lần chạy cho một representation gồm 5 bước:
+
+1. **Preprocess + Representation** – PCA (theo CEV) hoặc NoReduction
+2. **ARDL** – sweep (P,Q) → BIC selection → final refit Train+Val → rolling T+1 Test
+3. **LSTM** – sweep lookback×batch → Val_RMSE selection → final refit → Test
+4. **Diebold-Mariano test** – ARDL vs LSTM trên cùng Test population
+5. **Multi-seed stability** (optional) – seeds [42, 52, 62, 72, 82]
+
+---
+
+## Pipeline đầy đủ (khuyến nghị) — 3 lệnh, 1 experiment batch
+
+Đây là workflow chuẩn để tạo **toàn bộ** kết quả nghiên cứu trong **một** thư mục
+`artifacts/Run_<timestamp>/` duy nhất, tự khép kín, không phụ thuộc `outputs/` (mutable).
 
 ```bash
-python run_pipeline.py
-# hoặc tương đương:
-python experiments/run_experiment.py
+# ── STEP 1: Full sweep + multi-seed (tất cả representations) ──────────────
+python experiments/run_experiment.py --full-sweep --include-multiseed
+
+# → Ghi nhớ Run_<timestamp> in ra ở cuối. Ví dụ: Run_20260811_134344
+
+# ── STEP 2: Baselines (Persistence + AR(1)) ───────────────────────────────
+python experiments/run_baselines.py --run-dir artifacts/Run_<timestamp>
+
+# ── STEP 3: Bảng so sánh representations ──────────────────────────────────
+python -m src.evaluation.compare_representations --run-dir artifacts/Run_<timestamp>
 ```
 
-Lệnh này tự động thực hiện:
-1. **Preprocess + PCA** (CEV threshold từ `configs/config.yaml`)
-2. **ARDL grid search** – sweep (P,Q), selection by BIC, final refit on Train+Val, rolling T+1 forecast on Test
-3. **LSTM sweep** – lookback × batch_size grid, selection by Val_RMSE, final refit (Train+Val, best_epoch epochs, no EarlyStopping), forecast Test via cross-boundary windowing
-4. **Diebold-Mariano test** – so sánh thống kê ARDL vs LSTM trên cùng Test population
-5. **Artifacts** – lưu toàn bộ kết quả vào `artifacts/Run_<YYYYMMDD_HHMMSS>/`
+### Step 1 làm gì
 
-**Multi-CEV sweep** (so sánh nhiều ngưỡng PCA cùng lúc):
+`--full-sweep` tạo **một** parent `Run_*` rồi chạy tuần tự 6 child labels:
+
+| Child label | Representation |
+|---|---|
+| `no_dr` | NoReduction (318 raw scaled features) |
+| `pca_cev_0.75` | PCA k=2 |
+| `pca_cev_0.80` | PCA k=3 |
+| `pca_cev_0.85` | PCA k=4 |
+| `pca_cev_0.90` | PCA k=6 |
+| `pca_cev_0.95` | PCA k=11 |
+
+Mỗi child chạy đầy đủ, độc lập:
+
+1. **Preprocess + Representation** (PCA fit riêng cho từng CEV, hoặc NoReduction)
+2. **ARDL** – sweep (P,Q) → BIC selection → final refit Train+Val → rolling T+1 Test
+3. **LSTM** – sweep lookback×batch → Val_RMSE selection → final refit → Test
+   (kèm epoch-level tuning history cho **mọi** candidate)
+4. **DM test** – ARDL vs LSTM trên cùng 167 Test dates
+5. **Multi-seed stability** (chỉ khi có `--include-multiseed`) – seeds [42, 52, 62, 72, 82]
+
+Trước mỗi child, các mutable output dirs được **xoá sạch** để không lẫn dữ liệu cũ;
+sau khi chạy xong, toàn bộ được snapshot vào `Run_*/<label>/`.
+
+> **`--include-multiseed`** đảm bảo kết quả multi-seed nằm đúng trong
+> `Run_*/<label>/outputs/lstm_vnindex_multiseed/` chứ không rơi ra `outputs/` chung.
+> Nếu multi-seed lỗi, child vẫn được đánh dấu `OK` (non-fatal) vì ARDL/LSTM/DM vẫn hợp lệ.
+
+### Artifact structure sau Step 1–3
+
+```
+artifacts/Run_20260823_130205/
+├── sweep_manifest.json                     # planned/completed/failed labels, multiseed_included
+│
+├── no_dr/                                  # ─── child label (self-contained) ───
+│   ├── run_manifest.json                   #   parent_run_id, label, representation, status
+│   ├── config/effective_config.yaml        #   config thực tế dùng cho child này
+│   ├── results/run_summary.json            #   ARDL/LSTM/DM/multiseed metrics
+│   ├── data/processed/                     #   splits + representation data
+│   ├── models/
+│   ├── logs/figures/
+│   └── outputs/
+│       ├── ardl_vnindex_pca_sweep/         #   sweep_results.csv
+│       ├── ardl_vnindex_forecast/          #   chapter4_ardl_forecast.csv
+│       ├── ardl_vnindex_report/
+│       ├── lstm_vnindex_sweep/
+│       │   ├── sweep_summary.csv
+│       │   ├── predictions_lookback_*.csv
+│       │   ├── tuning_history/             #   epoch-level learning curves (mọi candidate)
+│       │   └── selected_tuning_history.csv
+│       ├── lstm_vnindex_multiseed/         #   per-seed predictions + mean±std
+│       └── model_comparison/               #   dm_test_results.csv, dm_test_report.txt
+│
+├── pca_cev_0.75/  ... pca_cev_0.95/        # cùng structure như trên
+│
+├── baselines/                              # ─── Step 2 ───
+│   ├── persistence/{predictions_val,predictions_test}.csv, summary.json
+│   └── ar1/{predictions_val,predictions_test}.csv, summary.json, model_summary.json
+│
+└── comparison/                             # ─── Step 2 + Step 3 ───
+    ├── representation_comparison.{csv,json}    # ARDL vs LSTM per representation
+    ├── baseline_comparison.csv                 # Persistence/AR(1)/PCA-ARDL
+    ├── pca_ardl_incremental_value.csv          # gain vs Persistence & AR(1)
+    ├── baseline_dm_comparison.csv              # DM: baseline vs PCA-ARDL
+    └── baseline_interpretation.json
+```
+
+### Thời gian ước tính
+
+| Lệnh | Thời gian |
+|---|---|
+| `--full-sweep` | ~40–60 phút |
+| `--full-sweep --include-multiseed` | ~70–120 phút |
+| `run_baselines.py` | < 1 giây |
+| `compare_representations` | < 1 giây |
+
+---
+
+## Chạy từng phần (debug / chạy lại một representation)
+
+### Single representation (vẫn dùng chung schema `Run_*/<label>/`)
 
 ```bash
-# Recommended: full experiment sweep (each run isolated in artifacts/)
-python experiments/run_experiment.py --full-sweep
-
-# Then compare:
-python -m src.evaluation.compare_representations
-
-# Individual runs (still work):
 python experiments/run_experiment.py --reduction none
-
-# PCA at various CEV levels:
 python experiments/run_experiment.py --reduction pca --cev 0.75
-python experiments/run_experiment.py --reduction pca --cev 0.80
 python experiments/run_experiment.py --reduction pca --cev 0.85
-python experiments/run_experiment.py --reduction pca --cev 0.90
-python experiments/run_experiment.py --reduction pca --cev 0.95
-# Compare all completed runs:
-python -m src.evaluation.compare_representations
 
+# Kèm multi-seed cho representation đó:
+python experiments/run_experiment.py --reduction pca --cev 0.85 --include-multiseed
 ```
 
-**Tùy chọn bổ sung:**
+Mỗi lệnh tạo `artifacts/Run_<ts>/` mới với **một** child label bên trong.
+
+### Tuỳ chọn bổ sung
 
 ```bash
 python experiments/run_experiment.py --skip-preprocess   # Rerun ARDL + LSTM (dữ liệu đã có)
@@ -196,52 +290,36 @@ python experiments/run_experiment.py --skip-ardl         # Bỏ qua ARDL
 python experiments/run_experiment.py --skip-lstm         # Bỏ qua LSTM
 python experiments/run_experiment.py --skip-dm           # Bỏ qua DM test
 python experiments/run_experiment.py --continue-on-error # Không dừng nếu 1 step fail
-python experiments/run_experiment.py --no-collect        # Không copy vào artifacts/
 ```
 
-**Mmulti-seed LSTM stability:**
-
+### Multi-seed LSTM stability standalone
 
 ```bash
 python experiments/run_lstm_multiseed_stability.py
+python experiments/run_lstm_multiseed_stability.py --skip-dm              # bỏ DM per-seed
+python experiments/run_lstm_multiseed_stability.py --validation-diagnostic # per-seed own best_epoch
 ```
 
-**Yêu cầu trước khi chạy:**
-- Pipeline preprocess + PCA (hoặc NoReduction) + LSTM tuning sweep phải đã hoàn thành trước (ít nhất `data/processed/pca/` và `outputs/lstm_vnindex_sweep/` phải tồn tại)
+**Yêu cầu:** `data/processed/pca/` phải đang chứa representation muốn test.
 
 **Cách hoạt động:**
-1. Chạy LSTM tuning sweep với seed=42 (reference run) — freeze (lookback, batch_size, best_epoch) được chọn
-2. Với mỗi seed trong [42, 52, 62, 72, 82]: tạo NEW model instance, refit trên Train+Val với cùng (lookback, batch_size, best_epoch), forecast Test
-3. Report: mean ± std cho Test RMSE/MAE/MAPE across 5 seeds
+1. Chạy LSTM tuning sweep với seed=42 (reference) → freeze (lookback, batch_size, best_epoch)
+2. Mỗi seed trong [42, 52, 62, 72, 82]: NEW model instance, refit Train+Val với cùng
+   hyperparameters đã freeze, forecast Test
+3. Report mean ± std cho Test RMSE/MAE/MAPE/R²
 
-**Options:**
-```bash
-# Skip DM comparison per seed (chỉ report LSTM stability):
-python experiments/run_lstm_multiseed_stability.py --skip-dm
-```
+> Chạy standalone sẽ ghi ra `outputs/lstm_vnindex_multiseed/` (mutable).
+> Muốn kết quả nằm trong `artifacts/`, dùng `--include-multiseed` ở Step 1.
 
-**Thứ tự chạy đầy đủ cho một representation:**
-```bash
-# 1. Single run (tuning + final refit, seed=42):
-python experiments/run_experiment.py --reduction pca --cev 0.75
-
-# 2. Multi-seed stability (reuses frozen selection from step 1):
-python experiments/run_lstm_multiseed_stability.py
-```
-
-Output sẽ lưu vào `outputs/lstm_vnindex_multiseed/` với per-seed predictions và summary statistics.
-
-
-| Lệnh | Thực hiện | Thời gian |
-|---|---|---|
-| `python experiments/run_experiment.py` | Full single-CEV (preprocess+PCA+ARDL+LSTM+DM) | ~5-10 phút |
-| `python experiments/run_experiment.py --multi-cev` | Trên × N CEV levels + compare | ~15-30 phút |
+**`--validation-diagnostic`** (chẩn đoán, không refit/không Test): với cùng LB/BS đã chọn,
+mỗi seed chạy Train→Val với EarlyStopping riêng để lấy `own_best_epoch`. Dùng để phân biệt
+hiện tượng `best_epoch=1` là do seed hay do distribution shift.
 
 ---
 
-### Cách 2 – Chạy từng bước riêng biệt
+## Chạy từng module riêng lẻ (advanced)
 
-Dùng khi cần debug hoặc chạy riêng từng phần.
+Dùng khi cần debug sâu một module cụ thể.
 
 **Bước 1: Tiền xử lý + PCA**
 
@@ -293,17 +371,14 @@ Yêu cầu: Bước 2 và 3 đã hoàn thành (cần forecast CSVs cho cả hai 
 
 Bước 2 và 3 **không phụ thuộc nhau**, có thể chạy song song sau khi Bước 1 hoàn thành.
 
----
-
-### Multi-seed LSTM stability (tùy chọn)
-
-Sau khi Bước 3 hoàn thành (tuning selection frozen), chạy multi-seed stability:
+**Bước 5: Baselines (Persistence + AR(1))**
 
 ```bash
-python experiments/run_lstm_multiseed_stability.py
+python experiments/run_baselines.py --run-dir artifacts/Run_<timestamp>
 ```
 
-Refit cùng (lookback, batch_size, best_epoch) với seeds [42, 52, 62, 72, 82], report mean ± std.
+Đọc VNINDEX + ARDL forecasts từ `Run_*` đã có, tính persistence/AR(1), so sánh + DM test.
+Không train model nào (chỉ 2 lần OLS fit nhỏ).
 
 ---
 
@@ -321,14 +396,20 @@ preprocess:
 
 Kết quả split cho N=826 observations: Train=536 / Val=123 / Test=167.
 
-### PCA Threshold
+### Representation (PCA / NoReduction)
 
 ```yaml
+reduction:
+  method: pca              # pca | none  (none = NoReduction, 318 raw scaled features)
+
 pca:
-  explained_variance_threshold: 0.75   # Active threshold cho single-CEV run
-  use_multi_cev: false                 # true = sweep all cev_thresholds
-  cev_thresholds: [0.85, 0.90, 0.95]  # Thresholds cho multi-CEV mode
+  explained_variance_threshold: 0.75              # CEV cho single run
+  cev_thresholds: [0.75, 0.80, 0.85, 0.90, 0.95]  # Danh sách CEV cho --full-sweep
+  use_multi_cev: false                            # (legacy) true = dùng run_all_multi_cev.py
 ```
+
+`--reduction` và `--cev` trên CLI override 2 key trên. Default giữ nguyên `pca`
+để mọi lệnh hiện có tái tạo đúng pipeline PCA cũ.
 
 ### ARDL Model Selection
 
@@ -383,10 +464,29 @@ lstm:
 - **Final refit (D4):** NEW model instance, fit Train+Val for exactly `best_epoch` epochs (no EarlyStopping), forecast ALL Test targets via cross-boundary windowing
 - **Multi-seed stability:** Refit same frozen (lookback, batch_size, best_epoch) with seeds [42, 52, 62, 72, 82]
 
+### Baselines (Persistence, AR(1))
+
+Cả hai dùng **cùng** dataset / split / Test dates / T+1 horizon / rolling one-step
+information boundary như PCA-ARDL & LSTM (verify fail-fast: same N=167, same dates, same y_true).
+
+- **Persistence:** `y_hat(t) = actual y(t-1)`. Không fit. Target Test đầu tiên dùng
+  observation cuối của Val.
+- **AR(1):** `y_t = c + φ·y_{t-1} + ε`, OLS.
+  - Val diagnostic: fit Train-only (536 obs)
+  - Final Test: refit trên unique Train+Val (659 obs), freeze coefficients,
+    rolling one-step với **actual** `y(t-1)` (không recursive substitution)
+
+Mục đích: trả lời câu hỏi *PCA-ARDL có giá trị dự báo tăng thêm so với persistence
+đơn thuần / mô hình tự hồi quy hay không*.
+
 ### Diebold-Mariano Test
 
 - **Fail-fast P0-5:** Requires ARDL and LSTM to predict the SAME Test target dates, SAME y_true, SAME n (167) — refuses to merge mismatched populations
 - **Significance reporting:** Distinguishes "observed lower loss" from "statistically significant" — marginal results (0.05 ≤ p < 0.10) are explicitly labeled as NOT confirmed accuracy differences at the 5% level
+- **Hai loại so sánh riêng biệt:**
+  - `ARDL vs LSTM` trong cùng một representation (`Run_*/<label>/outputs/model_comparison/`)
+  - `Baseline vs PCA-ARDL` (`Run_*/comparison/baseline_dm_comparison.csv`)
+  - Không dùng DM ARDL-vs-LSTM để kết luận "PCA thắng NoReduction" — đó là so sánh khác
 
 ---
 

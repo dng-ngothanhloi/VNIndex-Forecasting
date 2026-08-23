@@ -615,7 +615,7 @@ def save_pca_individual_figures(
     else:
         pca_fig_dir = figures_dir
     pca_fig_dir.mkdir(parents=True, exist_ok=True)
-    
+
     pc_cols = loadings.columns.tolist()
 
     # (A) PC1, PC2, PC3 LOADINGS

@@ -1,0 +1,7 @@
+label,n_exog_terms,AR_coef_VNINDEX_L1,AR_pvalue,n_exog_significant_5pct,pct_exog_significant,expected_false_positives,significant_terms
+no_dr,318,0.3060,0.6127,27,8.4906,15.9000,"BIC.L1, CDC.L1, CTG.L1, DHG.L1, DRC.L1, DSC.L1, DXV.L1, FIR.L1"
+pca_cev_0.75,2,0.9786,0.0000,0,0.0000,0.1000,
+pca_cev_0.80,3,0.9538,0.0000,1,33.3333,0.1500,PC2.L1
+pca_cev_0.85,4,0.9424,0.0000,2,50.0000,0.2000,"PC2.L1, PC3.L1"
+pca_cev_0.90,6,0.9329,0.0000,3,50.0000,0.3000,"PC1.L1, PC2.L1, PC3.L1"
+pca_cev_0.95,11,0.8508,0.0000,5,45.4545,0.5500,"PC1.L1, PC2.L1, PC3.L1, PC4.L1, PC8.L1"

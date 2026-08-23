@@ -54,7 +54,7 @@ preprocess:
 pca:
   explained_variance_threshold: 0.75  # options: 0.75 | 0.85 | 0.95
   # Multi-CEV sweep (set use_multi_cev: true to sweep all thresholds)
-  use_multi_cev: false
+  use_multi_cev: true
   cev_thresholds: [0.75, 0.80, 0.85, 0.90, 0.95]
   random_state: 42
   sector_mapping_file: "data/raw/symbol_sector_mapping.csv"

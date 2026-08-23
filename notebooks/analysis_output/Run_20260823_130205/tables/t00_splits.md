@@ -1,0 +1,7 @@
+**Table 0b. Chronological, non-overlapping splits**
+
+| Split      | Strategy    | From       | To         |   Rows | Ratio   |
+|:-----------|:------------|:-----------|:-----------|-------:|:--------|
+| Train      | non_overlap | 2022-01-04 | 2024-02-29 |    536 | 65%     |
+| Validation | non_overlap | 2024-03-01 | 2024-08-26 |    123 | 15%     |
+| Test       | non_overlap | 2024-08-27 | 2025-04-29 |    167 | 20%     |

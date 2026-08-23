@@ -28,6 +28,9 @@ Usage
   # Full sweep (NoReduction + all CEV levels, one Run_*):
   python experiments/run_experiment.py --full-sweep
 
+  # Full sweep + LSTM multi-seed stability per child (fully self-contained):
+  python experiments/run_experiment.py --full-sweep --include-multiseed
+
   # Compare results from a sweep:
   python -m src.evaluation.compare_representations --run-dir artifacts/Run_<ts>
 """
@@ -99,6 +102,7 @@ _MUTABLE_OUTPUT_DIRS = [
     "outputs/ardl_vnindex_forecast",
     "outputs/ardl_vnindex_report",
     "outputs/lstm_vnindex_sweep",
+    "outputs/lstm_vnindex_multiseed",
     "outputs/model_comparison",
 ]
 
@@ -202,6 +206,29 @@ def _read_lstm_summary() -> dict:
     return info
 
 
+def _read_multiseed_summary() -> dict:
+    """Read multi-seed stability stats if the step ran."""
+    ms_dir = PROJECT_ROOT / "outputs" / "lstm_vnindex_multiseed"
+    stats_path = ms_dir / "multiseed_summary_stats.csv"
+    if not stats_path.exists():
+        return {}
+    try:
+        stats = pd.read_csv(stats_path)
+        info: dict = {}
+        for _, row in stats.iterrows():
+            metric = str(row["Metric"]).replace("(%)", "_pct")
+            info[f"MS_{metric}_mean"] = float(row["Mean"])
+            info[f"MS_{metric}_std"] = float(row["Std"])
+            info[f"MS_{metric}_min"] = float(row["Min"])
+            info[f"MS_{metric}_max"] = float(row["Max"])
+        per_seed = ms_dir / "multiseed_test_metrics.csv"
+        if per_seed.exists():
+            info["MS_seeds"] = pd.read_csv(per_seed)["Seed"].tolist()
+        return info
+    except Exception:
+        return {}
+
+
 def _read_dm_summary() -> dict:
     """Read DM test p-values."""
     dm_path = PROJECT_ROOT / "outputs" / "model_comparison" / "dm_test_results.csv"
@@ -224,8 +251,10 @@ def _read_dm_summary() -> dict:
 # ── Child execution ──────────────────────────────────────────────────────────
 
 def _run_child(label: str, method: str, cev: float | None,
-               parent_run_dir: Path, config: dict, config_path: Path) -> str:
-    """Execute one child run (preprocess+repr → ARDL → LSTM → DM).
+               parent_run_dir: Path, config: dict, config_path: Path,
+               include_multiseed: bool = False) -> str:
+    """Execute one child run (preprocess+repr → ARDL → LSTM → DM
+    [→ multi-seed stability]).
     
     Returns status: "OK" or "FAILED".
     """
@@ -237,6 +266,15 @@ def _run_child(label: str, method: str, cev: float | None,
     child_config.setdefault("reduction", {})["method"] = method
     if cev is not None:
         child_config.setdefault("pca", {})["explained_variance_threshold"] = cev
+
+    # Governance: the sweep owns the CEV dimension, one threshold per child.
+    # src/run_all.py's multi-CEV branch ignores explained_variance_threshold
+    # and leaves the canonical data/processed/pca/ dir at cev_thresholds[-1],
+    # so leaving use_multi_cev=True here would hand EVERY child the same
+    # representation (the last threshold) while labelling them differently.
+    # Pin each child to exactly its requested threshold.
+    child_config.setdefault("pca", {})["use_multi_cev"] = False
+    child_config["pca"].pop("output_subdir", None)
 
     config_dir = child_dir / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -288,20 +326,56 @@ def _run_child(label: str, method: str, cev: float | None,
             if rc != 0:
                 failed_steps.append("DM")
 
+        # Step 5 (optional): Multi-seed LSTM stability
+        # Runs the Phase-3D protocol for THIS child's representation, so the
+        # per-seed results land in this child's snapshot. Non-fatal: a
+        # multi-seed failure does not invalidate the child's ARDL/LSTM/DM
+        # results, so it is recorded but does not mark the child FAILED.
+        if include_multiseed and not failed_steps:
+            _hdr(f"[{label}] Multi-seed LSTM stability (seeds 42/52/62/72/82)")
+            rc = _run([py, "experiments/run_lstm_multiseed_stability.py"],
+                      cwd=PROJECT_ROOT, label=f"{label}: Multi-seed")
+            if rc != 0:
+                print(f"[WARN] {label}: multi-seed stability failed (non-fatal)")
+                failed_steps.append("MultiSeed(non-fatal)")
+
     finally:
         temp_cfg_path.unlink(missing_ok=True)
 
     elapsed = time.time() - t0
-    status = "FAILED" if failed_steps else "OK"
 
     # Snapshot mutable outputs into child dir
     _snapshot_child(child_dir)
 
     # Read actual metrics from live outputs (before next child cleans them)
     pca_metrics = _read_pca_metrics()
+
+    # ── Governance guard: representation identity ────────────────────────────
+    # The child MUST have been fitted at the CEV threshold its label claims.
+    # A silent mismatch makes every downstream comparison invalid (identical
+    # representations reported under different labels), so it is fatal.
+    if method == "pca" and cev is not None and pca_metrics:
+        effective_cev = pca_metrics.get("cev_threshold")
+        if effective_cev is None:
+            failed_steps.append("ReprGuard(cev_threshold missing)")
+            print(f"[ERROR] {label}: pca_metrics.csv has no cev_threshold; "
+                  f"cannot verify representation identity")
+        elif abs(float(effective_cev) - float(cev)) > 1e-9:
+            failed_steps.append("ReprGuard(cev mismatch)")
+            print(f"[ERROR] {label}: GOVERNANCE VIOLATION -- requested "
+                  f"CEV={cev:.4f} but PCA was fitted at CEV="
+                  f"{float(effective_cev):.4f} (k={pca_metrics.get('k_optimal')}). "
+                  f"This child's representation does not match its label; "
+                  f"results are not comparable across the sweep.")
+
+    # A non-fatal multi-seed failure must NOT mark the child FAILED -- the
+    # child's ARDL/LSTM/DM results are still valid and comparable.
+    fatal_steps = [s for s in failed_steps if not s.endswith("(non-fatal)")]
+    status = "FAILED" if fatal_steps else "OK"
     ardl_summary = _read_ardl_summary()
     lstm_summary = _read_lstm_summary()
     dm_summary = _read_dm_summary()
+    multiseed_summary = _read_multiseed_summary() if include_multiseed else {}
 
     # Write child run_summary.json
     results_dir = child_dir / "results"
@@ -322,6 +396,7 @@ def _run_child(label: str, method: str, cev: float | None,
         "ardl": ardl_summary,
         "lstm": lstm_summary,
         "dm": dm_summary,
+        "multiseed": multiseed_summary,
     }
     with open(results_dir / "run_summary.json", "w", encoding="utf-8") as f:
         json.dump(run_summary, f, indent=2, default=str)
@@ -364,8 +439,9 @@ def _run_full_sweep(args: argparse.Namespace, config: dict, config_path: Path) -
     parent_run_dir = _make_run_dir(artifacts_base)
 
     _hdr(f"FULL SWEEP: {len(sweep_configs)} representations")
-    print(f"  Parent : {parent_run_dir}")
-    print(f"  Labels : {', '.join(planned_labels)}")
+    print(f"  Parent    : {parent_run_dir}")
+    print(f"  Labels    : {', '.join(planned_labels)}")
+    print(f"  Multi-seed: {'ENABLED (seeds 42/52/62/72/82 per child)' if args.include_multiseed else 'disabled'}")
     print()
 
     wall_start = time.time()
@@ -376,7 +452,8 @@ def _run_full_sweep(args: argparse.Namespace, config: dict, config_path: Path) -
         label = _label_for(method, cev)
         _hdr(f"CHILD {i}/{len(sweep_configs)}: {label}")
 
-        status = _run_child(label, method, cev, parent_run_dir, config, config_path)
+        status = _run_child(label, method, cev, parent_run_dir, config, config_path,
+                            include_multiseed=args.include_multiseed)
         if status == "OK":
             completed_labels.append(label)
         else:
@@ -395,6 +472,8 @@ def _run_full_sweep(args: argparse.Namespace, config: dict, config_path: Path) -
         "planned_labels": planned_labels,
         "completed_labels": completed_labels,
         "failed_labels": failed_labels,
+        "multiseed_included": bool(args.include_multiseed),
+        "multiseed_seeds": [42, 52, 62, 72, 82] if args.include_multiseed else None,
         "common_protocol": {
             "train_ratio": config.get("preprocess", {}).get("train_ratio"),
             "val_ratio": config.get("preprocess", {}).get("val_ratio"),
@@ -432,7 +511,8 @@ def _run_single(args: argparse.Namespace, config: dict, config_path: Path) -> No
     print()
 
     wall_start = time.time()
-    status = _run_child(label, method, cev, parent_run_dir, config, config_path)
+    status = _run_child(label, method, cev, parent_run_dir, config, config_path,
+                        include_multiseed=args.include_multiseed)
     wall_elapsed = time.time() - wall_start
 
     # Write parent sweep_manifest (single-child sweep)
@@ -446,6 +526,8 @@ def _run_single(args: argparse.Namespace, config: dict, config_path: Path) -> No
         "planned_labels": [label],
         "completed_labels": [label] if status == "OK" else [],
         "failed_labels": [label] if status != "OK" else [],
+        "multiseed_included": bool(args.include_multiseed),
+        "multiseed_seeds": [42, 52, 62, 72, 82] if args.include_multiseed else None,
         "common_protocol": {
             "train_ratio": config.get("preprocess", {}).get("train_ratio"),
             "val_ratio": config.get("preprocess", {}).get("val_ratio"),
@@ -489,6 +571,8 @@ Examples:
   python experiments/run_experiment.py --reduction pca --cev 0.75   # single PCA run
   python experiments/run_experiment.py --reduction none             # single NoReduction run
   python experiments/run_experiment.py --full-sweep                 # no_dr + all CEV (ONE Run_*)
+  python experiments/run_experiment.py --full-sweep --include-multiseed
+                                                                    # + multi-seed per child
   python experiments/run_experiment.py --multi-cev                  # legacy multi-CEV
   python -m src.evaluation.compare_representations --run-dir artifacts/Run_<ts>
         """,
@@ -496,6 +580,9 @@ Examples:
     p.add_argument("--config", default="configs/config.yaml")
     p.add_argument("--full-sweep", action="store_true",
                    help="Run NoReduction + all PCA CEV levels under ONE parent Run_*")
+    p.add_argument("--include-multiseed", action="store_true",
+                   help="Also run LSTM multi-seed stability (seeds 42/52/62/72/82) for each "
+                        "child label; results land in <Run_*>/<label>/outputs/lstm_vnindex_multiseed/")
     p.add_argument("--multi-cev", action="store_true",
                    help="Legacy multi-CEV (delegates to run_all_multi_cev.py)")
     p.add_argument("--skip-preprocess", action="store_true")

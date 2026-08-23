@@ -132,6 +132,12 @@ def collect_from_run_dir(run_dir: Path) -> pd.DataFrame:
         # DM
         row["DM_MSE_p"] = dm_info.get("DM_MSE_p")
         row["DM_MAE_p"] = dm_info.get("DM_MAE_p")
+        # Multi-seed stability (present only when --include-multiseed was used)
+        ms_info = summary.get("multiseed", {}) or {}
+        row["MS_RMSE_mean"] = ms_info.get("MS_RMSE_mean")
+        row["MS_RMSE_std"] = ms_info.get("MS_RMSE_std")
+        row["MS_R2_mean"] = ms_info.get("MS_R2_mean")
+        row["MS_R2_std"] = ms_info.get("MS_R2_std")
 
         rows.append(row)
 
@@ -176,6 +182,13 @@ def print_comparison_table(df: pd.DataFrame, run_dir: Path) -> None:
     if len(detail_cols) > 1:
         print("  MODEL SELECTION DETAIL:")
         print(df[detail_cols].to_string(index=False))
+
+    # Multi-seed stability, only if any child actually ran it
+    ms_value_cols = [c for c in ["MS_RMSE_mean", "MS_RMSE_std", "MS_R2_mean", "MS_R2_std"]
+                     if c in df.columns]
+    if ms_value_cols and df[ms_value_cols].notna().any().any():
+        print("\n  LSTM MULTI-SEED STABILITY (seeds 42/52/62/72/82, mean +/- std):")
+        print(df[["label"] + ms_value_cols].to_string(index=False))
 
     print("=" * 120)
     print(f"  Source: {run_dir}")

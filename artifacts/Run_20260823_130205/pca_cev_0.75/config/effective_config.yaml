@@ -1,0 +1,107 @@
+ardl:
+  aic_thresholds: null
+  bic_thresholds: 4430.0
+  causal: true
+  ensemble_criterion: RMSE_val
+  ensemble_top_n: 3
+  hold_back: 5
+  hqic_thresholds: null
+  p_values:
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  q_values:
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  rmse_val_thresholds: 17.0
+  selected_pair: null
+  selection_criterion: BIC
+  use_ensemble: false
+columns:
+  close: Lần cuối
+  date: Ngày
+  high: Cao
+  low: Thấp
+  numeric:
+  - Lần cuối
+  - Mở
+  - Cao
+  - Thấp
+  - KL
+  open: Mở
+  pct_change: '% Thay đổi'
+  symbol: Symbol
+  volume: KL
+lstm:
+  batch_size_values:
+  - 16
+  - 32
+  dense_units:
+  - 16
+  dropout_rate: 0.2
+  early_stopping_patience: 25
+  epochs: 150
+  export_batch_size: null
+  export_lookback: null
+  learning_rate: 0.0001
+  lookback_values:
+  - 20
+  - 30
+  - 40
+  - 50
+  - 60
+  lstm_units:
+  - 64
+  - 32
+  min_delta: 0.0001
+  min_epochs: 30
+  min_lr: 1.0e-06
+  overlap_patience_multiplier: 2.0
+  reduce_lr_factor: 0.5
+  reduce_lr_patience: 10
+  use_batch_norm: false
+paths:
+  artifacts_dir: data/processed
+  artifacts_subdirs:
+    core: core
+    pca: pca
+    quality: quality
+    splits: splits
+    stationarity: stationarity
+  figures_dir: logs/figures
+  models_dir: models
+  raw_file: data/raw/Data_VNINDEX.csv
+  use_timestamp_subdir: false
+pca:
+  cev_thresholds:
+  - 0.75
+  - 0.8
+  - 0.85
+  - 0.9
+  - 0.95
+  explained_variance_threshold: 0.75
+  random_state: 42
+  sector_mapping_file: data/raw/symbol_sector_mapping.csv
+  sector_top_pcs: 10
+  sector_top_symbols: 20
+  use_multi_cev: false
+preprocess:
+  end_date: '2025-04-30'
+  missing_threshold: 0.2
+  outlier_k: 1.5
+  remove_weekends: true
+  start_date: '2022-01-01'
+  stationarity_after_diff_sample_size: 10
+  stationarity_sample_size: 30
+  test_ratio: 0.2
+  train_ratio: 0.65
+  use_overlap_val: false
+  val_overlap_ratio: 0.2
+  val_ratio: 0.15
+reduction:
+  method: pca

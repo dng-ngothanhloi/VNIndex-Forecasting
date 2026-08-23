@@ -1,7 +1,30 @@
+"""
+reporting.py – ARDL model summary reporting and visualization
+==============================================================
+Steps 08-11 of the ARDL pipeline:
+
+  08 run_summary        Score Board: model spec, observation-count
+                        disambiguation, Val OOS / Train+Val / Test metrics,
+                        residual diagnostics, statsmodels coefficient table
+  09 run_plot           5 evaluation figures (forecast, residuals, QQ,
+                        histogram, actual-vs-predicted scatter)
+  10 run_ardl_80obs     Short-window (recent-period) diagnostic subset
+  11 run_summary_table  Full statsmodels-style regression results table
+                        including coefficient CIs and residual diagnostics
+
+Restored from reporting_v0.1.py (the canonical pre-loss implementation),
+which already carries the report-consistency corrections: explicit
+"Fixed-coefficient rolling one-step-ahead" terminology, causal/hold_back
+disclosure, and the Development-input vs effective-nobs vs Test-predictions
+distinction that must never be conflated.
+"""
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy import stats
 from pathlib import Path
@@ -42,6 +65,11 @@ def run_summary(context: dict) -> dict:
     print(f"  AR lag list :", ardl_model._lags)
     print(f"  Exog lags map:", ardl_model._order)
     print(f"  Number of parameters:", len(ardl_res.params))
+    print()
+    print("  Data periods:")
+    print(f"    Train      : {train_period}  (n={len(y_train)})")
+    print(f"    Validation : {val_period}" + (f"  (n={len(y_val)})" if y_val is not None else ""))
+    print(f"    Test       : {test_period}  (n={len(y_test)})")
     print()
     print("  NOTE on observation counts (do not conflate these):")
     print(f"    Development input observations (Train+Val rows fed to ARDL): {len(y_trainval)}")
@@ -204,6 +232,16 @@ def run_ardl_80obs(context: dict) -> dict:
     y_test_80 = y_test[mask_80]
     pred_test_80 = pred_test[mask_80]
 
+    # Guard: this is a dataset-specific recent-window diagnostic. If the
+    # Test split does not extend past start_date_80 (e.g. a different
+    # dataset or split), skip rather than crash -- it is diagnostic only
+    # and never feeds model selection or the canonical Test metrics.
+    if len(y_test_80) == 0:
+        print(f"[ARDL Step 10] No Test observations on/after "
+              f"{start_date_80.date()} — 80-obs diagnostic skipped.")
+        context.update({"metrics_80": None, "forecast_80_path": None, "forecast_80": None})
+        return context
+
     y_test_eval, pred_test_eval = paired_valid(y_test_80, pred_test_80)
 
     # Tính metrics
@@ -230,6 +268,11 @@ def run_ardl_80obs(context: dict) -> dict:
     forecast_path = results_dir / f"ardl_test_forecast_80obs_P{selected_pair[0]}_Q{selected_pair[1]}.csv"
     forecast_80.to_csv(forecast_path, index=False)
     print(f"\n[COMP] Da luu ket qua vao: {forecast_path}")
+    print(f"  [Step 10] Recent-window diagnostic (n={metrics_80['n_obs']}): "
+          f"RMSE={metrics_80['RMSE']:.4f} MAE={metrics_80['MAE']:.4f} R2={metrics_80['R2']:.4f}")
+    print(f"  NOTE: this is a DIAGNOSTIC subset of Test, not the canonical Test metric "
+          f"(canonical Test n={len(y_test)}). Never use it for model selection or "
+          f"cross-representation comparison.")
 
     context.update({
         "metrics_80": metrics_80,
@@ -318,6 +361,4 @@ def run_summary_table(context: dict) -> dict:
         print(f"ARCH LM:                   {arch_stat:>8.2f}        Prob(ARCH):             {arch_p:>8.3f}")
         print(f"Skew:                      {skew:>8.3f}        Kurtosis:               {kurt:>8.3f}")
 
-    
-    
     return context

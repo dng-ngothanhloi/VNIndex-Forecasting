@@ -56,7 +56,7 @@ GOLDEN_FUNCTION_HASHES = {
     "summarize_pc_by_sector": "c05a28d6338586c2aec9b03db6712bf34554421ef7bad50ab70b33a8ecb5501a",
     "verify_pc_orthogonality": "229319d0d2030af395f945aa5845c9c9d078d065c9f5baef1732a50e09ee6398",
     "save_pca_figure": "b342a55f0a3c32f199ddb00db3a9456a3ba3866e24839fbb80c31dd955ef4369",
-    "save_pca_individual_figures": "61f783708baca882368bd57c484e71fab207cd26b156b99dc000c1155aa71522",
+    "save_pca_individual_figures": "661d2b1fae1755d4522f6f96e4e2478aaf0da909f01d7375f07db702dae77c22",
     "save_pca_threshold_table": "de40f1db0f1da0a8974eb8a7fa787f3c5aa71f88bc7f2632a7e4a8c2135fd6b8",
     "save_scree_plot_figure": "12476f93d1d9d2627fb592cf30f613432ed02e9aadd4b5390cc01f9330d807b1",
     "parse_args": "8f8a69d49b5f85a1d5db5fa58eca40db91662b1ed7fa82ba6234e4df4afd46fc",

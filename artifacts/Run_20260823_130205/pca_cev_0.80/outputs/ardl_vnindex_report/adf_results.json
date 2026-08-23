@@ -1,0 +1,50 @@
+{
+  "VNINDEX_level": {
+    "adf_stat": -2.690446909725634,
+    "pvalue": 0.07570600978079484,
+    "usedlag": 1,
+    "nobs": 824
+  },
+  "VNINDEX_diff1": {
+    "adf_stat": -26.739871961013232,
+    "pvalue": 0.0,
+    "usedlag": 0,
+    "nobs": 824
+  },
+  "PC1_level": {
+    "adf_stat": -2.3951285924660937,
+    "pvalue": 0.1431160506874884,
+    "usedlag": 1,
+    "nobs": 824
+  },
+  "PC1_diff1": {
+    "adf_stat": -23.279101845953136,
+    "pvalue": 0.0,
+    "usedlag": 0,
+    "nobs": 824
+  },
+  "PC2_level": {
+    "adf_stat": -0.33549091939554704,
+    "pvalue": 0.9203251777682762,
+    "usedlag": 5,
+    "nobs": 820
+  },
+  "PC2_diff1": {
+    "adf_stat": -11.56979669777294,
+    "pvalue": 3.1221732488135842e-21,
+    "usedlag": 4,
+    "nobs": 820
+  },
+  "PC3_level": {
+    "adf_stat": -1.9282989096877594,
+    "pvalue": 0.318867728281523,
+    "usedlag": 10,
+    "nobs": 815
+  },
+  "PC3_diff1": {
+    "adf_stat": -6.015377644271649,
+    "pvalue": 1.538184312887491e-07,
+    "usedlag": 9,
+    "nobs": 815
+  }
+}

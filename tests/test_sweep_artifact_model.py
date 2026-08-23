@@ -269,3 +269,44 @@ def test_no_global_artifact_scanning():
     # Should not contain glob("Run_*") pattern scanning
     assert 'glob("Run_*")' not in src
     assert "artifacts_dir.glob" not in src
+
+
+# ─────────────────────────────────────────────────────────────────
+# 13. --include-multiseed flag exists and threads into _run_child
+# ─────────────────────────────────────────────────────────────────
+def test_include_multiseed_flag_exists():
+    from experiments.run_experiment import parse_args
+    args = parse_args(["--full-sweep", "--include-multiseed"])
+    assert args.include_multiseed is True
+    args_off = parse_args(["--full-sweep"])
+    assert args_off.include_multiseed is False
+
+
+def test_run_child_accepts_include_multiseed_kwarg():
+    """_run_child must accept include_multiseed so the sweep can thread it."""
+    import inspect
+    from experiments.run_experiment import _run_child
+    sig = inspect.signature(_run_child)
+    assert "include_multiseed" in sig.parameters
+    # Default must be False so existing callers are unaffected
+    assert sig.parameters["include_multiseed"].default is False
+
+
+def test_multiseed_dir_is_snapshotted_into_child():
+    """The multiseed output dir must be in the snapshot list so results land
+    in <Run_*>/<label>/outputs/lstm_vnindex_multiseed/."""
+    from experiments.run_experiment import _MUTABLE_OUTPUT_DIRS
+    assert "outputs/lstm_vnindex_multiseed" in _MUTABLE_OUTPUT_DIRS
+
+
+def test_non_fatal_multiseed_failure_keeps_child_ok(tmp_path):
+    """A child whose only failed step is MultiSeed(non-fatal) must still be
+    aggregated (status OK), because ARDL/LSTM/DM results remain valid."""
+    parent = tmp_path / "Run_20260811_120000"
+    parent.mkdir()
+    _make_sweep_manifest(parent, ["pca_cev_0.85"])
+    _make_child(parent, "pca_cev_0.85", "pca", cev=0.85, status="OK")
+
+    df = collect_from_run_dir(parent)
+    assert len(df) == 1
+    assert df.iloc[0]["label"] == "pca_cev_0.85"

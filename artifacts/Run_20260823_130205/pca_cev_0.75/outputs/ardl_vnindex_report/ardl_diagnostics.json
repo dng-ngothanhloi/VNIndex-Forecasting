@@ -1,0 +1,8 @@
+{
+  "durbin_watson": 1.9479673077766528,
+  "ljungbox_q10": 5.539177961970093,
+  "ljungbox_p_q10": 0.8523811261190427,
+  "breusch_pagan": {
+    "error": "could not run breusch-pagan (shape misalign)"
+  }
+}

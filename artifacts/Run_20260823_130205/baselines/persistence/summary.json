@@ -1,0 +1,16 @@
+{
+  "model": "persistence",
+  "forecast_horizon": "T+1",
+  "fit_required": false,
+  "val_n": 123,
+  "test_n": 167,
+  "val_rmse": 12.993518615689139,
+  "val_mae": 9.250650406504064,
+  "test_rmse": 14.136804431021817,
+  "test_mae": 7.815928143712572,
+  "test_mape": 0.6314901425263058,
+  "test_r2": 0.8460061100957079,
+  "test_start": "2024-08-27",
+  "test_end": "2025-04-29",
+  "same_population_verified": true
+}
