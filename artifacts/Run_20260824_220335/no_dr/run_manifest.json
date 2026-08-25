@@ -1,0 +1,17 @@
+{
+  "parent_run_id": "Run_20260824_220335",
+  "label": "no_dr",
+  "status": "OK",
+  "effective_config_path": "no_dr/config/effective_config.yaml",
+  "summary_path": "no_dr/results/run_summary.json",
+  "representation": {
+    "method": "none",
+    "cev_requested": null,
+    "cev_achieved": NaN,
+    "p_original": "318",
+    "k_actual": "318",
+    "dim_reduction_pct": "0.0"
+  },
+  "elapsed_seconds": 970.4,
+  "failed_steps": []
+}

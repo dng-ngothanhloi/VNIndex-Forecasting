@@ -216,8 +216,10 @@ class LSTMForecaster(BaseForecaster):
 
                 patience_es = get_adaptive_patience(self.use_overlap_val, self.early_stopping_patience, self.overlap_patience_multiplier)
                 patience_rlr = get_adaptive_patience(self.use_overlap_val, self.reduce_lr_patience, self.overlap_patience_multiplier)
+                #Error EarlyStopping start at first epoch
                 es_start_epoch = self.min_epochs if self.use_overlap_val else 0
-
+                es_start_epoch = self.min_epochs
+                
                 callbacks = [
                     MinEpochEarlyStopping(
                         start_epoch=es_start_epoch, monitor="val_loss",

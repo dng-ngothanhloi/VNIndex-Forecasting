@@ -286,8 +286,10 @@ def run_train_and_evaluate(context: dict) -> dict:
 
             patience_es = get_adaptive_patience(use_overlap_val, base_patience, overlap_multiplier)
             patience_rlr = get_adaptive_patience(use_overlap_val, reduce_lr_patience, overlap_multiplier)
-            es_start_epoch = min_epochs if use_overlap_val else 0
-
+            #Error EarlyStopping start at first epoch
+            #es_start_epoch = min_epochs if use_overlap_val else 0
+            es_start_epoch = min_epochs
+            
             callbacks = [
                 MinEpochEarlyStopping(
                     start_epoch=es_start_epoch,

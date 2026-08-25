@@ -1,0 +1,17 @@
+{
+  "parent_run_id": "Run_20260824_220335",
+  "label": "pca_cev_0.90",
+  "status": "OK",
+  "effective_config_path": "pca_cev_0.90/config/effective_config.yaml",
+  "summary_path": "pca_cev_0.90/results/run_summary.json",
+  "representation": {
+    "method": "pca",
+    "cev_requested": 0.9,
+    "cev_achieved": 0.9114450663697804,
+    "p_original": 318.0,
+    "k_actual": 6.0,
+    "dim_reduction_pct": 98.1132075471698
+  },
+  "elapsed_seconds": 573.4,
+  "failed_steps": []
+}

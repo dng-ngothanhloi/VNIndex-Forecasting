@@ -1,0 +1,3 @@
+Loss_Type,DM_Stat,p_value,Mean_Diff,SE_Diff,Sample_Size,Significant,Conclusion
+MSE,-3.2696000836026906,0.0010769963001198146,-555.7517522628352,169.975452059099,167,True,forecast1 performs better | MSE diff=-555.7518 | highly significant (p<0.01)
+MAE,-5.4534020146360325,4.941518016998714e-08,-11.801748526556795,2.1641075598099766,167,True,forecast1 performs better | MAE diff=-11.8017 | highly significant (p<0.01)
