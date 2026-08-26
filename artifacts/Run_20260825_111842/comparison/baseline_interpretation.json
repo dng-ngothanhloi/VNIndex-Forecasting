@@ -1,0 +1,92 @@
+[
+  {
+    "cev": 0.75,
+    "vs_baseline": "Persistence",
+    "rmse_gain": 0.0727615078461401,
+    "rmse_gain_pct": 0.5146955820261061,
+    "dm_significant": false,
+    "pca_ardl_lower_loss": true,
+    "verdict": "small_not_significant"
+  },
+  {
+    "cev": 0.75,
+    "vs_baseline": "AR(1)",
+    "rmse_gain": 0.024973494925017548,
+    "rmse_gain_pct": 0.17725506297893975,
+    "dm_significant": false,
+    "pca_ardl_lower_loss": true,
+    "verdict": "small_not_significant"
+  },
+  {
+    "cev": 0.8,
+    "vs_baseline": "Persistence",
+    "rmse_gain": 0.15527225221740615,
+    "rmse_gain_pct": 1.0983546739649066,
+    "dm_significant": false,
+    "pca_ardl_lower_loss": true,
+    "verdict": "small_not_significant"
+  },
+  {
+    "cev": 0.8,
+    "vs_baseline": "AR(1)",
+    "rmse_gain": 0.10748423929628359,
+    "rmse_gain_pct": 0.7628938465725295,
+    "dm_significant": false,
+    "pca_ardl_lower_loss": true,
+    "verdict": "small_not_significant"
+  },
+  {
+    "cev": 0.85,
+    "vs_baseline": "Persistence",
+    "rmse_gain": 0.16496247010557674,
+    "rmse_gain_pct": 1.1669007017143347,
+    "dm_significant": false,
+    "pca_ardl_lower_loss": true,
+    "verdict": "small_not_significant"
+  },
+  {
+    "cev": 0.85,
+    "vs_baseline": "AR(1)",
+    "rmse_gain": 0.11717445718445418,
+    "rmse_gain_pct": 0.8316723730544859,
+    "dm_significant": false,
+    "pca_ardl_lower_loss": true,
+    "verdict": "small_not_significant"
+  },
+  {
+    "cev": 0.9,
+    "vs_baseline": "Persistence",
+    "rmse_gain": 0.17019495996123446,
+    "rmse_gain_pct": 1.2039139452743541,
+    "dm_significant": false,
+    "pca_ardl_lower_loss": true,
+    "verdict": "small_not_significant"
+  },
+  {
+    "cev": 0.9,
+    "vs_baseline": "AR(1)",
+    "rmse_gain": 0.1224069470401119,
+    "rmse_gain_pct": 0.8688111604643391,
+    "dm_significant": false,
+    "pca_ardl_lower_loss": true,
+    "verdict": "small_not_significant"
+  },
+  {
+    "cev": 0.95,
+    "vs_baseline": "Persistence",
+    "rmse_gain": 0.08055658273310407,
+    "rmse_gain_pct": 0.5698358715094808,
+    "dm_significant": false,
+    "pca_ardl_lower_loss": true,
+    "verdict": "small_not_significant"
+  },
+  {
+    "cev": 0.95,
+    "vs_baseline": "AR(1)",
+    "rmse_gain": 0.03276856981198151,
+    "rmse_gain_pct": 0.23258238076777651,
+    "dm_significant": false,
+    "pca_ardl_lower_loss": true,
+    "verdict": "small_not_significant"
+  }
+]

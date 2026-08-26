@@ -1,0 +1,40 @@
+{
+  "schema_version": 2,
+  "run_id": "Run_20260825_111842",
+  "experiment_type": "representation_sweep",
+  "started_at": "2026-08-25T13:34:08.112653",
+  "completed_at": "2026-08-25T13:34:08.112659",
+  "wall_seconds": 8125.9,
+  "planned_labels": [
+    "no_dr",
+    "pca_cev_0.75",
+    "pca_cev_0.80",
+    "pca_cev_0.85",
+    "pca_cev_0.90",
+    "pca_cev_0.95"
+  ],
+  "completed_labels": [
+    "no_dr",
+    "pca_cev_0.75",
+    "pca_cev_0.80",
+    "pca_cev_0.85",
+    "pca_cev_0.90",
+    "pca_cev_0.95"
+  ],
+  "failed_labels": [],
+  "multiseed_included": true,
+  "multiseed_seeds": [
+    42,
+    52,
+    62,
+    72,
+    82
+  ],
+  "common_protocol": {
+    "train_ratio": 0.65,
+    "val_ratio": 0.15,
+    "test_ratio": 0.2,
+    "forecast_horizon": "T+1"
+  },
+  "status": "OK"
+}

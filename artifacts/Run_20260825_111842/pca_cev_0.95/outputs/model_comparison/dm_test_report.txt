@@ -1,0 +1,34 @@
+DIEBOLD-MARIANO TEST REPORT
+========================================================================
+
+Date range:    2024-08-27 → 2025-04-29
+Sample size:   167 observations
+Forecast horizon: T+1 (h=1, same for both models, P0-5)
+
+STANDALONE TEST METRICS (same population, P0-5):
+  ARDL: RMSE=14.056248  MAE=7.756511  MAPE=0.627441%  R2=0.847756
+  LSTM: RMSE=32.156448  MAE=22.231429  MAPE=1.764790%  R2=0.203222
+
+MSE LOSS:
+  DM Statistic : -3.324374
+  p-value      : 0.000886
+  Mean diff    : -836.459059
+  Conclusion   : forecast1 performs better | MSE diff=-836.4591 | highly significant (p<0.01)
+
+MAE LOSS:
+  DM Statistic : -4.906448
+  p-value      : 0.000001
+  Mean diff    : -14.474917
+  Conclusion   : forecast1 performs better | MAE diff=-14.4749 | highly significant (p<0.01)
+
+INTERPRETATION:
+  NOTE: 'has lower observed loss' describes the sample MSE/MAE on this
+  Test set only. It is a statistically defensible claim ONLY when paired
+  with the DM significance verdict below -- observing a lower point
+  estimate is not itself evidence of a real accuracy difference.
+
+  MSE  : ARDL has the lower observed MSE loss on this Test set (diff=-836.4591).
+         This difference IS statistically significant at the 5% level (p=0.0009).
+
+  MAE  : ARDL has the lower observed MAE loss on this Test set (diff=-14.4749).
+         This difference IS statistically significant in favor of ARDL (p=0.0000).

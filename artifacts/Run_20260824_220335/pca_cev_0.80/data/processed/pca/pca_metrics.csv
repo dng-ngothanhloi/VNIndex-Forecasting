@@ -1,9 +1,0 @@
-,value
-input_features,318.0
-k_optimal,3.0
-cev_threshold,0.8
-cev_achieved,0.8388009240141128
-dim_reduction_pct,99.05660377358491
-pc1_var,0.5967381648555375
-pc1_5_cum_var,0.8951299327813959
-max_pc_cross_corr,1.3710753738671281e-14

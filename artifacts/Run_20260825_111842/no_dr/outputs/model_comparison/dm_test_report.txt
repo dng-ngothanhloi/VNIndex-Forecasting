@@ -1,0 +1,34 @@
+DIEBOLD-MARIANO TEST REPORT
+========================================================================
+
+Date range:    2024-08-27 → 2025-04-29
+Sample size:   167 observations
+Forecast horizon: T+1 (h=1, same for both models, P0-5)
+
+STANDALONE TEST METRICS (same population, P0-5):
+  ARDL: RMSE=85.886985  MAE=63.126159  MAPE=4.978164%  R2=-4.684021
+  LSTM: RMSE=41.323937  MAE=28.217542  MAPE=2.201137%  R2=-0.315844
+
+MSE LOSS:
+  DM Statistic : +3.943696
+  p-value      : 0.000080
+  Mean diff    : 5668.906365
+  Conclusion   : forecast2 performs better | MSE diff=5668.9064 | highly significant (p<0.01)
+
+MAE LOSS:
+  DM Statistic : +4.914935
+  p-value      : 0.000001
+  Mean diff    : 34.908617
+  Conclusion   : forecast2 performs better | MAE diff=34.9086 | highly significant (p<0.01)
+
+INTERPRETATION:
+  NOTE: 'has lower observed loss' describes the sample MSE/MAE on this
+  Test set only. It is a statistically defensible claim ONLY when paired
+  with the DM significance verdict below -- observing a lower point
+  estimate is not itself evidence of a real accuracy difference.
+
+  MSE  : LSTM has the lower observed MSE loss on this Test set (diff=5668.9064).
+         This difference IS statistically significant at the 5% level (p=0.0001).
+
+  MAE  : LSTM has the lower observed MAE loss on this Test set (diff=34.9086).
+         This difference IS statistically significant in favor of LSTM (p=0.0000).

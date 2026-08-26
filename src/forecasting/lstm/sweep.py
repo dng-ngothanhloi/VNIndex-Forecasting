@@ -176,6 +176,59 @@ def final_refit_and_forecast(
     }
 
 
+def prepare_target_history_context(context: dict) -> dict:
+    """Derive a target-history-only context from an existing LSTM context.
+
+    The goal is to produce a model whose input tensor is:
+        shape = (L, 1)  — VNINDEX history only, no PCA channels
+
+    The canonical sweep loop always concatenates two arrays:
+        X          from make_windowed_data(df, pc_cols, ...)   shape (N, L, len(pc_cols))
+        X_hist     from add_target_history(df, ...)            shape (N, L, 1)
+        X_final  = concat([X, X_hist], axis=2)                 shape (N, L, len(pc_cols)+1)
+
+    To make the final tensor (N, L, 1) without touching the sweep loop,
+    we set pc_cols=[] (empty) so X has shape (N, L, 0), and store the
+    VNINDEX series as the target_col inside the scaled DataFrames so
+    add_target_history returns (N, L, 1).  The concat then gives
+    (N, L, 0+1) = (N, L, 1). ✓
+
+    This is the cleanest zero-duplication approach: the VNINDEX history
+    arrives exactly once in the final input tensor, matching the
+    AR(1) → PCA-ARDL analogy where AR(1) uses only y(t-1).
+
+    Scientific comparison enabled:
+      TH-LSTM   input shape (L, 1): VNINDEX history only
+      PCA-LSTM  input shape (L, k+1): k PC channels + VNINDEX history
+      Question: does adding k PC channels improve forecast?
+
+    Context keys changed:
+      pc_cols          → []   (empty list — no feature channels)
+      train/val/test   → DataFrames containing only the target_col column
+      _th_mode         → True (flag for callers / artifact labelling)
+    """
+    import copy
+
+    train_scaled_df = context["train_scaled_df"]
+    val_scaled_df   = context["val_scaled_df"]
+    test_scaled_df  = context["test_scaled_df"]
+    target_col      = context["target_col"]
+
+    # Keep only the target column. make_windowed_data(df, pc_cols=[], ...)
+    # will produce X of shape (N, L, 0); add_target_history will then
+    # contribute the sole (N, L, 1) channel — total input (N, L, 1).
+    def _th_df(scaled_df: pd.DataFrame) -> pd.DataFrame:
+        return scaled_df[[target_col]].copy()
+
+    th_context = copy.copy(context)
+    th_context["pc_cols"]           = []          # empty → X has 0 feature channels
+    th_context["train_scaled_df"]   = _th_df(train_scaled_df)
+    th_context["val_scaled_df"]     = _th_df(val_scaled_df)
+    th_context["test_scaled_df"]    = _th_df(test_scaled_df)
+    th_context["_th_mode"]          = True
+    return th_context
+
+
 def run_train_and_evaluate(context: dict) -> dict:
     """LSTM tuning + final-refit lifecycle (P0-3B, P0-4, P1).
 
@@ -338,8 +391,9 @@ def run_train_and_evaluate(context: dict) -> dict:
             except Exception:
                 best_epoch = len(history.history.get("loss", []))
 
-            if best_epoch < min_epochs and use_overlap_val:
-                print(f"[WARN] WARNING: Best epoch {best_epoch} < min_epochs {min_epochs}")
+            if best_epoch < min_epochs:
+                print(f"[WARN] Best epoch ({best_epoch}) < min_epochs ({min_epochs}) — "
+                      f"possible early collapse; check tuning_history for val_loss trajectory.")
 
             if use_overlap_val and val_rmse > 0:
                 overfit_ratio = train_rmse / val_rmse

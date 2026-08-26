@@ -1,0 +1,39 @@
+{
+  "model": "target_history_lstm",
+  "representation": "target_history",
+  "forecast_horizon": "T+1",
+  "input_features": [
+    "VNINDEX"
+  ],
+  "input_dim": 1,
+  "selected_lookback": 10,
+  "selected_batch_size": 32,
+  "selected_best_epoch": 72,
+  "architecture": {
+    "lstm_units": [
+      32,
+      16
+    ],
+    "dense_units": [
+      8
+    ],
+    "dropout_rate": 0.1,
+    "use_batch_norm": false
+  },
+  "learning_rate": 0.0003,
+  "dropout": 0.1,
+  "optimizer": "Adam",
+  "loss": "mse",
+  "train_n": 536,
+  "val_n": 123,
+  "test_n": 167,
+  "val_rmse": 21.41007236594672,
+  "val_mae": 17.20301781631098,
+  "test_rmse": 26.243990875056713,
+  "test_mae": 16.938495808383227,
+  "test_mape": 1.3547776683679713,
+  "test_r2": 0.4692857539537979,
+  "test_start": "2024-08-27",
+  "test_end": "2025-04-29",
+  "same_population_verified": true
+}

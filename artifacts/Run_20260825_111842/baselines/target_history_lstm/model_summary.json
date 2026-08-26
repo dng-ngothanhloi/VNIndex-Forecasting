@@ -1,0 +1,23 @@
+{
+  "model": "target_history_lstm",
+  "input_channels": [
+    "VNINDEX_history"
+  ],
+  "input_dim_per_timestep": 1,
+  "lookback": 10,
+  "batch_size": 32,
+  "best_epoch_tuning": 72,
+  "final_refit_epochs": 72,
+  "architecture": {
+    "lstm_units": [
+      32,
+      16
+    ],
+    "dense_units": [
+      8
+    ],
+    "dropout_rate": 0.1,
+    "use_batch_norm": false
+  },
+  "learning_rate": 0.0003
+}
