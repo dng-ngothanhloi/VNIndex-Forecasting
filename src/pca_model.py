@@ -218,7 +218,7 @@ def save_pca_figure(
     ax2 = fig.add_subplot(gs[0, 1])
     ax2.plot(range(1, n+1), cum_explained_var*100, color="#388E3C", linewidth=2)
     ax2.fill_between(range(1, n+1), cum_explained_var*100, alpha=0.1, color="#388E3C")
-    for thr, col in [(0.80,"#FF9800"),(0.90,"#F44336"),(0.95,"#7B1FA2"),(0.99,"#000")]:
+    for thr, col in [(0.75,"#FF9800"), (0.80,"#F44336"), (0.85,"#7B1FA2"), (0.90,"#1E88E5"), (0.95,"#000")]:
         kt = int(np.argmax(cum_explained_var >= thr)) + 1
         ax2.axhline(thr*100, color=col, linestyle=":", linewidth=1,
                     label=f"{thr*100:.0f}% → k={kt}")
@@ -280,14 +280,14 @@ def save_pca_figure(
     ax7 = fig.add_subplot(gs[2, 1])
     ax7.axis("off")
     thr_data = []
-    for thr in [0.80, 0.85, 0.90, 0.95, 0.99]:
+    for thr in [0.75, 0.80, 0.85, 0.90, 0.95]:
         kt = int(np.argmax(cum_explained_var >= thr)) + 1
         thr_data.append([f"{thr*100:.0f}%", kt,
                          f"{(1-kt/n)*100:.1f}%",
                          f"{cum_explained_var[kt-1]*100:.2f}%"])
     tbl = ax7.table(
         cellText=thr_data,
-        colLabels=["Ngưỡng CEV", "k", "Giảm chiều", "CEV thực"],
+        colLabels=["Ngưỡng CEV", "k", "Giảm chiều", "CEV thực tế"],
         cellLoc="center", loc="center", bbox=[0, 0, 1, 1],
     )
     tbl.auto_set_font_size(False)

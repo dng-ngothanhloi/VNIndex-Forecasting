@@ -48,7 +48,7 @@ def main() -> None:
     config = _load_config(config_path)
 
     use_multi_cev   = config.get("pca", {}).get("use_multi_cev", False)
-    cev_thresholds  = config.get("pca", {}).get("cev_thresholds", [0.85, 0.90, 0.95])
+    cev_thresholds  = config.get("pca", {}).get("cev_thresholds", [0.75, 0.80, 0.85, 0.90, 0.95])
 
     # ── Step 1: Preprocess (always run once, shared across CEV levels) ────────
     print("[STEP 1/2] Running preprocessing pipeline...")
