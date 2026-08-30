@@ -563,5 +563,3 @@ python src/run_all.py --config configs/config.yaml
 Ngo Thanh Loi, MCS Student at Duy Tan University, Vietnam
 Email: <ngothanhloi@dtu.edu.vn>
 LinkedIn: https://www.linkedin.com/in/ngo-thanh-loi/
-
-**Contribution team:**
